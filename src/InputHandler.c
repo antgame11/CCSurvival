@@ -437,7 +437,7 @@ static void InputHandler_PlaceBlock(void) {
 	if (Game_SelectedPos.valid && World_Contains(Game_SelectedPos.pos.x, Game_SelectedPos.pos.y, Game_SelectedPos.pos.z) &&
 		World_GetBlock(Game_SelectedPos.pos.x, Game_SelectedPos.pos.y, Game_SelectedPos.pos.z) == SURVIVAL_BLOCK_WORKBENCH &&
 		SurvivalTest_Enabled) {
-		SurvivalInvScreen_Show();
+		SurvivalInvScreen_ShowBench();
 		return;
 	}
 

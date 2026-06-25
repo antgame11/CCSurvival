@@ -110,6 +110,16 @@ cc_bool SurvivalTest_TryCraft(void);
 /* Takes the crafting result and adds it to inventory, clears result slot. */
 void SurvivalTest_TakeCraftResult(void);
 
+/* Workbench (3x3) crafting grid access (slots 0-8=grid slots, 9=result slot). */
+BlockID SurvivalTest_Craft3x3SlotBlock(int slot);
+int SurvivalTest_Craft3x3SlotCount(int slot);
+/* Sets a workbench crafting slot (slot 0-9, block, count). Clears if block=AIR. */
+void SurvivalTest_SetCraft3x3Slot(int slot, BlockID block, int count);
+/* Attempts to craft with the current 3x3 grid. Returns true if a recipe matched. */
+cc_bool SurvivalTest_TryCraftBench(void);
+/* Takes the workbench crafting result and adds it to inventory, clears result slot. */
+void SurvivalTest_TakeCraftResultBench(void);
+
 /* Whether the player is allowed to place their currently selected block. */
 /* Returns true (always allowed) when survival mode is disabled. */
 cc_bool SurvivalTest_CanPlace(BlockID block);

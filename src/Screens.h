@@ -30,6 +30,9 @@ void InventoryScreen_Show(void);
 void InventoryScreen_Hide(void);
 /* Opens the survival inventory screen (only meaningful when SurvivalTest_Enabled). */
 void SurvivalInvScreen_Show(void);
+/* Opens the survival inventory screen with the 3x3 workbench crafting grid instead */
+/*  of the normal 2x2 personal grid (right-clicking a workbench). */
+void SurvivalInvScreen_ShowBench(void);
 /* Shows the Survival Test "Game over!" screen (permadeath, no respawn). */
 void GameOverScreen_Show(void);
 void HUDScreen_Show(void);

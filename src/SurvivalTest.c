@@ -191,9 +191,54 @@ static BlockID SurvivalTest_TryCraft2x2Simple(BlockID a, BlockID b, BlockID c, B
 	return BLOCK_AIR;
 }
 
+/* Tool recipes for the workbench's full 3x3 grid, matching vanilla Minecraft's shapes */
+/*  (grid indices 0-8 are row-major: 0,1,2 / 3,4,5 / 6,7,8). */
+static BlockID SurvivalTest_TryCraft3x3Tool(BlockID grid[9], int* outCount) {
+	int tier;
+	BlockID mat;
+	for (tier = 0; tier < SURVIVAL_TIER_COUNT; tier++) {
+		mat = SurvivalTest_TierMaterial(tier);
+		if (mat == BLOCK_AIR) continue;
+
+		/* Pickaxe: 3 material across the top, stick down the middle column */
+		if (grid[0]==mat && grid[1]==mat && grid[2]==mat &&
+		    grid[3]==BLOCK_AIR && grid[4]==SURVIVAL_ITEM_STICK && grid[5]==BLOCK_AIR &&
+		    grid[6]==BLOCK_AIR && grid[7]==SURVIVAL_ITEM_STICK && grid[8]==BLOCK_AIR) {
+			*outCount = SurvivalTest_TierDurability(tier);
+			return SURVIVAL_TOOL_ID(SURVIVAL_TOOL_PICKAXE, tier);
+		}
+		/* Axe: 2 material across the top-left, stick down the middle column */
+		if (grid[0]==mat && grid[1]==mat && grid[2]==BLOCK_AIR &&
+		    grid[3]==BLOCK_AIR && grid[4]==SURVIVAL_ITEM_STICK && grid[5]==BLOCK_AIR &&
+		    grid[6]==BLOCK_AIR && grid[7]==SURVIVAL_ITEM_STICK && grid[8]==BLOCK_AIR) {
+			*outCount = SurvivalTest_TierDurability(tier);
+			return SURVIVAL_TOOL_ID(SURVIVAL_TOOL_AXE, tier);
+		}
+		/* Sword: 2 material stacked in the middle column, stick below */
+		if (grid[0]==BLOCK_AIR && grid[1]==mat && grid[2]==BLOCK_AIR &&
+		    grid[3]==BLOCK_AIR && grid[4]==mat && grid[5]==BLOCK_AIR &&
+		    grid[6]==BLOCK_AIR && grid[7]==SURVIVAL_ITEM_STICK && grid[8]==BLOCK_AIR) {
+			*outCount = SurvivalTest_TierDurability(tier);
+			return SURVIVAL_TOOL_ID(SURVIVAL_TOOL_SWORD, tier);
+		}
+		/* Shovel: 1 material on top, stick down the middle column */
+		if (grid[0]==BLOCK_AIR && grid[1]==mat && grid[2]==BLOCK_AIR &&
+		    grid[3]==BLOCK_AIR && grid[4]==SURVIVAL_ITEM_STICK && grid[5]==BLOCK_AIR &&
+		    grid[6]==BLOCK_AIR && grid[7]==SURVIVAL_ITEM_STICK && grid[8]==BLOCK_AIR) {
+			*outCount = SurvivalTest_TierDurability(tier);
+			return SURVIVAL_TOOL_ID(SURVIVAL_TOOL_SHOVEL, tier);
+		}
+	}
+	*outCount = 0;
+	return BLOCK_AIR;
+}
+
 /* Match 3x3 shaped recipe for tools - rotation/reflection invariant is complex, so we match exact patterns */
 static BlockID SurvivalTest_TryCraft3x3(BlockID grid[9], int* outCount) {
 	int i;
+	BlockID tool = SurvivalTest_TryCraft3x3Tool(grid, outCount);
+	if (tool != BLOCK_AIR) return tool;
+
 	/* Workbench (already handled in 2x2) */
 	/* Furnace: 8 cobblestone ring (center empty) */
 	if (grid[0]==BLOCK_COBBLE && grid[1]==BLOCK_COBBLE && grid[2]==BLOCK_COBBLE &&
@@ -215,6 +260,9 @@ static BlockID SurvivalTest_TryCraft3x3(BlockID grid[9], int* outCount) {
 
 static struct SurvivalSlot st_craft2x2[4];  /* personal crafting grid */
 static struct SurvivalSlot st_craftResult;  /* crafting output slot */
+
+static struct SurvivalSlot st_craft3x3[9];      /* workbench crafting grid */
+static struct SurvivalSlot st_craftResultBench; /* workbench output slot */
 
 /* Furnace smelting: maps input ore/fuel to output. Furnaces are placed in world and store state. */
 struct SurvivalFurnace {
@@ -3269,6 +3317,86 @@ void SurvivalTest_TakeCraftResult(void) {
 	st_craftResult.block = BLOCK_AIR;
 	st_craftResult.count = 0;
 	SurvivalTest_TryCraft(); /* re-preview: grid may still have enough for another */
+	st_invVersion++;
+}
+
+/* Workbench (3x3) crafting grid accessor functions (slots 0-8 are the 3x3 grid, 9 is result). */
+BlockID SurvivalTest_Craft3x3SlotBlock(int slot) {
+	if (!SurvivalTest_Enabled || slot < 0 || slot > 9) return BLOCK_AIR;
+	if (slot == 9) return st_craftResultBench.block;
+	return st_craft3x3[slot].block;
+}
+
+int SurvivalTest_Craft3x3SlotCount(int slot) {
+	if (!SurvivalTest_Enabled || slot < 0 || slot > 9) return 0;
+	if (slot == 9) return st_craftResultBench.count;
+	return st_craft3x3[slot].count;
+}
+
+void SurvivalTest_SetCraft3x3Slot(int slot, BlockID block, int count) {
+	if (!SurvivalTest_Enabled || slot < 0 || slot > 9) return;
+	if (slot == 9) {
+		st_craftResultBench.block = block;
+		st_craftResultBench.count = block == BLOCK_AIR ? 0 : count;
+	} else {
+		st_craft3x3[slot].block = block;
+		st_craft3x3[slot].count = block == BLOCK_AIR ? 0 : count;
+	}
+	st_invVersion++;
+}
+
+/* Recomputes the result-slot preview from the current 3x3 workbench grid, without */
+/*  consuming any ingredients - mirrors SurvivalTest_TryCraft for the 2x2 grid. */
+cc_bool SurvivalTest_TryCraftBench(void) {
+	int outCount;
+	BlockID result, grid[9];
+	int i;
+	if (!SurvivalTest_Enabled) return false;
+
+	for (i = 0; i < 9; i++) grid[i] = st_craft3x3[i].block;
+
+	result = SurvivalTest_TryCraft3x3(grid, &outCount);
+
+	st_craftResultBench.block = result;
+	st_craftResultBench.count = result == BLOCK_AIR ? 0 : outCount;
+	st_invVersion++;
+	return result != BLOCK_AIR;
+}
+
+/* Consumes the ingredients for whichever recipe is currently shown in the bench */
+/*  result slot (called only once the player actually takes the result). Every */
+/*  3x3 recipe (tools, furnace, chest) consumes exactly one item from each non-empty */
+/*  cell of the grid, matching the recipes' shapes. */
+static void SurvivalTest_ConsumeCraftIngredientsBench(void) {
+	int i;
+	for (i = 0; i < 9; i++) {
+		if (st_craft3x3[i].block == BLOCK_AIR) continue;
+		st_craft3x3[i].count--;
+		if (st_craft3x3[i].count <= 0) st_craft3x3[i].block = BLOCK_AIR;
+	}
+}
+
+/* Takes the bench crafting result and adds it to inventory, consuming the 3x3 */
+/*  grid's ingredients only now - mirrors SurvivalTest_TakeCraftResult. */
+void SurvivalTest_TakeCraftResultBench(void) {
+	int i;
+	BlockID result;
+	if (!SurvivalTest_Enabled) return;
+	if (st_craftResultBench.block == BLOCK_AIR) return;
+	result = st_craftResultBench.block;
+
+	if (result >= SURVIVAL_ITEM_TOOL_BASE) {
+		SurvivalTest_AddTool(result, st_craftResultBench.count);
+	} else {
+		for (i = 0; i < st_craftResultBench.count; i++) {
+			SurvivalTest_AddBlock(result);
+		}
+	}
+
+	SurvivalTest_ConsumeCraftIngredientsBench();
+	st_craftResultBench.block = BLOCK_AIR;
+	st_craftResultBench.count = 0;
+	SurvivalTest_TryCraftBench(); /* re-preview: grid may still have enough for another */
 	st_invVersion++;
 }
 
