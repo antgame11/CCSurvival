@@ -2780,6 +2780,33 @@ static int SurvivalInvScreen_PointerDown(void* screen, int id, int x, int y) {
 
 	/* Check crafting grid first */
 	if (hitCraft >= 0) {
+		/* Result slot: take it and add to inventory */
+		if (hitCraft == 4) {
+			SurvivalTest_TakeCraftResult();
+			s->heldCraftSlot = -1;
+			s->heldSlot = -1;
+			s->dirty = true;
+			return TOUCH_TYPE_GUI;
+		}
+
+		/* If holding a storage item, place it in crafting grid slot */
+		if (s->heldSlot >= 0) {
+			BlockID sblock = SurvivalTest_SlotBlock(s->heldSlot);
+			int scount = SurvivalTest_SlotCount(s->heldSlot);
+			BlockID cblock = SurvivalTest_CraftSlotBlock(hitCraft);
+			int ccount = SurvivalTest_CraftSlotCount(hitCraft);
+
+			/* Swap storage slot with craft slot */
+			SurvivalTest_SetCraftSlot(hitCraft, sblock, scount);
+			SurvivalTest_SetInvSlot(s->heldSlot, cblock, ccount);
+			s->heldSlot = -1;
+			s->dirty = true;
+			/* After placing items, try to auto-execute any matching recipe */
+			SurvivalTest_TryCraft();
+			return TOUCH_TYPE_GUI;
+		}
+
+		/* Crafting grid slots (0-3) */
 		if (s->heldCraftSlot < 0) {
 			/* Nothing held: pick up the slot if it has something */
 			if (SurvivalTest_CraftSlotBlock(hitCraft) != BLOCK_AIR)
@@ -2797,12 +2824,29 @@ static int SurvivalInvScreen_PointerDown(void* screen, int id, int x, int y) {
 			SurvivalTest_SetCraftSlot(hitCraft, a_block, a_count);
 			s->heldCraftSlot = -1;
 			s->dirty = true;
+			/* After placing items, try to auto-execute any matching recipe */
+			SurvivalTest_TryCraft();
 		}
 		return TOUCH_TYPE_GUI;
 	}
 
 	/* Check storage grid */
 	if (hitStorage >= 0) {
+		/* If holding a crafting item, swap with storage slot */
+		if (s->heldCraftSlot >= 0) {
+			BlockID cblock = SurvivalTest_CraftSlotBlock(s->heldCraftSlot);
+			int ccount = SurvivalTest_CraftSlotCount(s->heldCraftSlot);
+			BlockID sblock = SurvivalTest_SlotBlock(hitStorage);
+			int scount = SurvivalTest_SlotCount(hitStorage);
+
+			/* Swap craft slot with storage slot */
+			SurvivalTest_SetCraftSlot(s->heldCraftSlot, sblock, scount);
+			SurvivalTest_SetInvSlot(hitStorage, cblock, ccount);
+			s->heldCraftSlot = -1;
+			s->dirty = true;
+			return TOUCH_TYPE_GUI;
+		}
+
 		if (s->heldSlot < 0) {
 			/* Nothing held: pick up the slot if it has something */
 			if (SurvivalTest_SlotBlock(hitStorage) != BLOCK_AIR)

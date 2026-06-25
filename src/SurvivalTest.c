@@ -3072,6 +3072,14 @@ void SurvivalTest_SwapSlots(int a, int b) {
 	SurvivalTest_SyncHotbar();
 }
 
+/* Sets an inventory slot directly. */
+void SurvivalTest_SetInvSlot(int slot, BlockID block, int count) {
+	if (!SurvivalTest_Enabled || slot < 0 || slot >= SURVIVAL_INV_SLOTS) return;
+	st_inv[slot].block = block;
+	st_inv[slot].count = block == BLOCK_AIR ? 0 : count;
+	SurvivalTest_SyncHotbar();
+}
+
 /* Crafting grid accessor functions (slots 0-3 are 2x2 grid, 4 is result). */
 BlockID SurvivalTest_CraftSlotBlock(int slot) {
 	if (!SurvivalTest_Enabled || slot < 0 || slot > 4) return BLOCK_AIR;
@@ -3099,34 +3107,65 @@ void SurvivalTest_SetCraftSlot(int slot, BlockID block, int count) {
 
 /* Attempts to execute a craft with the current 2x2 grid. Returns true if successful. */
 cc_bool SurvivalTest_TryCraft(void) {
-	int outCount;
-	BlockID result;
+	int outCount, planks, i;
+	BlockID result, a, b, c, d;
 	if (!SurvivalTest_Enabled) return false;
 	if (st_craftResult.block != BLOCK_AIR) return false; /* result slot must be empty */
 
-	result = SurvivalTest_TryCraft2x2Simple(
-		st_craft2x2[0].block, st_craft2x2[1].block,
-		st_craft2x2[2].block, st_craft2x2[3].block,
-		&outCount);
+	a = st_craft2x2[0].block;
+	b = st_craft2x2[1].block;
+	c = st_craft2x2[2].block;
+	d = st_craft2x2[3].block;
 
+	result = SurvivalTest_TryCraft2x2Simple(a, b, c, d, &outCount);
 	if (result == BLOCK_AIR) return false;
 
-	/* Consume ingredients and produce result */
-	if (st_craft2x2[0].block == BLOCK_WOOD) st_craft2x2[0].count--;
-	if (st_craft2x2[1].block == BLOCK_WOOD) st_craft2x2[1].count--;
-	if (st_craft2x2[2].block == BLOCK_WOOD) st_craft2x2[2].count--;
-	if (st_craft2x2[3].block == BLOCK_WOOD) st_craft2x2[3].count--;
+	/* Consume ingredients based on recipe matched */
+	/* Sticks: consume planks */
+	if (result == SURVIVAL_ITEM_STICK) {
+		if (a == BLOCK_WOOD) st_craft2x2[0].count--;
+		if (b == BLOCK_WOOD) st_craft2x2[1].count--;
+		if (c == BLOCK_WOOD) st_craft2x2[2].count--;
+		if (d == BLOCK_WOOD) st_craft2x2[3].count--;
+	}
+	/* Workbench: consume 4 planks */
+	else if (result == SURVIVAL_BLOCK_WORKBENCH) {
+		st_craft2x2[0].count--;
+		st_craft2x2[1].count--;
+		st_craft2x2[2].count--;
+		st_craft2x2[3].count--;
+	}
+	/* Torch: consume coal or stick (whichever was used) */
+	else if (result == SURVIVAL_BLOCK_TORCH) {
+		if (a == BLOCK_COAL_ORE) st_craft2x2[0].count--;
+		if (d == SURVIVAL_ITEM_STICK) st_craft2x2[3].count--;
+		if (c == BLOCK_COAL_ORE) st_craft2x2[2].count--;
+		if (b == SURVIVAL_ITEM_STICK) st_craft2x2[1].count--;
+	}
 
 	/* Clear consumed ingredients */
-	if (st_craft2x2[0].count <= 0) st_craft2x2[0].block = BLOCK_AIR;
-	if (st_craft2x2[1].count <= 0) st_craft2x2[1].block = BLOCK_AIR;
-	if (st_craft2x2[2].count <= 0) st_craft2x2[2].block = BLOCK_AIR;
-	if (st_craft2x2[3].count <= 0) st_craft2x2[3].block = BLOCK_AIR;
+	for (i = 0; i < 4; i++) {
+		if (st_craft2x2[i].count <= 0) st_craft2x2[i].block = BLOCK_AIR;
+	}
 
 	st_craftResult.block = result;
 	st_craftResult.count = outCount;
 	st_invVersion++;
 	return true;
+}
+
+/* Takes crafting result and adds it to inventory, then clears result slot. */
+void SurvivalTest_TakeCraftResult(void) {
+	int i;
+	if (!SurvivalTest_Enabled) return;
+	if (st_craftResult.block == BLOCK_AIR) return;
+
+	for (i = 0; i < st_craftResult.count; i++) {
+		SurvivalTest_AddBlock(st_craftResult.block);
+	}
+	st_craftResult.block = BLOCK_AIR;
+	st_craftResult.count = 0;
+	st_invVersion++;
 }
 
 /* Adds one of the given block: stacks onto an existing matching slot if */
