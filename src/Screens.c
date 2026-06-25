@@ -550,6 +550,7 @@ static int HUDScreen_BuildCountsMesh(struct HUDScreen* s, struct VertexTextured*
 	for (i = 0; i < SURVIVAL_HOTBAR_SLOTS; i++) {
 		count = SurvivalTest_HotbarCount(i);
 		if (count <= 1) continue;
+		if (SurvivalTest_ToolMaxDurability(SurvivalTest_SlotBlock(i)) > 0) continue; /* durability bar drawn separately */
 
 		nDigits = String_MakeUInt32((cc_uint32)count, digits);
 		totalW  = 0.0f;
@@ -671,6 +672,27 @@ static void HUDScreen_Render(void* screen, float delta) {
 	if (!Gui_GetBlocksWorld()) {
 		Gfx_BindDynamicVb(s->vb);
 		if (!Gui.HideHotbar) Widget_Render2(&s->hotbar, 12);
+
+		/* Tool durability bars on the hotbar, matching vanilla's item damage indicator */
+		if (SurvivalTest_Enabled && !Gui.HideHotbar) {
+			struct HotbarWidget* w = &s->hotbar;
+			int i, uses, maxUses, barW, barX, barY;
+			PackedCol barCol;
+			for (i = 0; i < SURVIVAL_HOTBAR_SLOTS; i++) {
+				maxUses = SurvivalTest_ToolMaxDurability(SurvivalTest_SlotBlock(i));
+				if (maxUses <= 0) continue;
+				uses = SurvivalTest_HotbarCount(i);
+				if (uses >= maxUses) continue;
+
+				barX = (int)(w->x + w->slotWidth * i + 2);
+				barY = (int)(w->y + w->height - 5);
+				barW = (int)(w->slotWidth - 4) * uses / maxUses;
+				barCol = PackedCol_Make(255 - 255 * uses / maxUses, 255 * uses / maxUses, 0, 255);
+
+				Gfx_Draw2DFlat(barX, barY, (int)(w->slotWidth - 4), 2, PackedCol_Make(0, 0, 0, 255));
+				if (barW > 0) Gfx_Draw2DFlat(barX, barY, barW, 1, barCol);
+			}
+		}
 
 		if (!Gui.HideCrosshair && Gui.IconsTex && !tablist_active) {
 			Gfx_BindTexture(Gui.IconsTex);
@@ -2506,6 +2528,7 @@ static void SurvivalInvScreen_BuildMesh(void* screen) {
 		for (i = 0; i < SURVIVAL_INV_SLOTS; i++) {
 			count = SurvivalTest_SlotCount(i);
 			if (count <= 1) continue;
+			if (SurvivalTest_SlotBlock(i) >= SURVIVAL_ITEM_TOOL_BASE) continue; /* durability bar drawn separately */
 			SurvivalInv_SlotXY(s, i, &slotX, &slotY);
 			s->countAtlas.tex.y = slotY + s->slotSize - s->countAtlas.tex.height - 2;
 			s->countAtlas.curX  = slotX + 2;
@@ -2620,6 +2643,32 @@ static void SurvivalInvScreen_Render(void* screen, float delta) {
 		Gfx_BindDynamicVb(s->vb);
 		Gfx_DrawVb_IndexedTris_Range(s->countVertCount,
 		                             SURVINV_MAX_ISO_VERTS, DRAW_HINT_RECT);
+	}
+
+	/* Tool durability bars: a thin green-to-red bar under the icon, matching */
+	/*  vanilla Minecraft's item durability indicator, drawn for any slot holding */
+	/*  a damaged tool (full-durability tools draw no bar, same as vanilla). */
+	for (i = 0; i < SURVIVAL_INV_SLOTS; i++) {
+		BlockID toolBlock;
+		int uses, maxUses, barW, barX, barY;
+		PackedCol barCol;
+		if (i == s->heldSlot) continue;
+
+		toolBlock = SurvivalTest_SlotBlock(i);
+		maxUses   = SurvivalTest_ToolMaxDurability(toolBlock);
+		if (maxUses <= 0) continue;
+
+		uses = SurvivalTest_SlotCount(i);
+		if (uses >= maxUses) continue; /* full durability: no bar, matching vanilla */
+
+		SurvivalInv_SlotXY(s, i, &slotX, &slotY);
+		barX = slotX + 2;
+		barY = slotY + s->slotSize - 4;
+		barW = (s->slotSize - 4) * uses / maxUses;
+		barCol = PackedCol_Make(255 - 255 * uses / maxUses, 255 * uses / maxUses, 0, 255);
+
+		Gfx_Draw2DFlat(barX, barY,     s->slotSize - 4, 2, PackedCol_Make(0, 0, 0, 255));
+		if (barW > 0) Gfx_Draw2DFlat(barX, barY, barW, 1, barCol);
 	}
 
 	/* 3D paperdoll, confined to its preview box and rotated to face the mouse */

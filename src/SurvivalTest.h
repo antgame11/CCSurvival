@@ -61,6 +61,11 @@ enum SurvivalToolTier { SURVIVAL_TIER_WOOD, SURVIVAL_TIER_STONE, SURVIVAL_TIER_I
 /* Computes the item ID for a given tool kind/tier (4 kinds x 4 tiers, base 110). */
 #define SURVIVAL_TOOL_ID(kind, tier) (SURVIVAL_ITEM_TOOL_BASE + (tier) * SURVIVAL_TOOL_KIND_COUNT + (kind))
 
+/* Gets the kind/tier of the given tool item ID. Returns false if it isn't a tool. */
+cc_bool SurvivalTest_ToolKindTier(BlockID block, int* kind, int* tier);
+/* Gets the max durability (full uses) of the given tool item ID, or 0 if not a tool. */
+int SurvivalTest_ToolMaxDurability(BlockID block);
+
 /* Applies damage to the player (respects invincibility frames). */
 /* hurtDir (for the hurt camera tilt) is randomised, matching the original's */
 /*  hurt(null, damage) call sites (environmental damage - fall/lava/etc). */

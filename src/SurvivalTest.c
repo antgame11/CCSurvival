@@ -109,8 +109,67 @@ static void SurvivalTest_InitRecipes(void) {
 	/* Recipes would go here - for now, crafting is implicit via helper functions */
 }
 
+/* Tool tier -> raw material block/item used in its recipes. */
+static BlockID SurvivalTest_TierMaterial(int tier) {
+	switch (tier) {
+	case SURVIVAL_TIER_WOOD:  return BLOCK_WOOD;
+	case SURVIVAL_TIER_STONE: return BLOCK_COBBLE;
+	case SURVIVAL_TIER_IRON:  return SURVIVAL_ITEM_INGOT_IRON;
+	case SURVIVAL_TIER_GOLD:  return SURVIVAL_ITEM_INGOT_GOLD;
+	default: return BLOCK_AIR; /* SURVIVAL_TIER_DIAMOND: no obtainable material in this build */
+	}
+}
+
+/* Tool tier -> max uses, matching genuine Minecraft durability values. */
+int SurvivalTest_TierDurability(int tier) {
+	switch (tier) {
+	case SURVIVAL_TIER_WOOD:  return 60;
+	case SURVIVAL_TIER_STONE: return 132;
+	case SURVIVAL_TIER_IRON:  return 251;
+	case SURVIVAL_TIER_GOLD:  return 33;
+	default: return 1;
+	}
+}
+
+/* Tool recipes, condensed to fit the 2x2 personal crafting grid (no 3x3 workbench grid */
+/*  exists yet): each tool kind uses a distinct material/stick layout so kinds don't collide. */
+static BlockID SurvivalTest_TryCraftTool(BlockID a, BlockID b, BlockID c, BlockID d, int* outCount) {
+	int tier;
+	BlockID mat;
+	for (tier = 0; tier < SURVIVAL_TIER_COUNT; tier++) {
+		mat = SurvivalTest_TierMaterial(tier);
+		if (mat == BLOCK_AIR) continue;
+
+		/* Pickaxe: material, material / stick, air */
+		if (a == mat && b == mat && c == SURVIVAL_ITEM_STICK && d == BLOCK_AIR) {
+			*outCount = SurvivalTest_TierDurability(tier);
+			return SURVIVAL_TOOL_ID(SURVIVAL_TOOL_PICKAXE, tier);
+		}
+		/* Axe: material, material / air, stick */
+		if (a == mat && b == mat && c == BLOCK_AIR && d == SURVIVAL_ITEM_STICK) {
+			*outCount = SurvivalTest_TierDurability(tier);
+			return SURVIVAL_TOOL_ID(SURVIVAL_TOOL_AXE, tier);
+		}
+		/* Shovel: material, air / stick, air */
+		if (a == mat && b == BLOCK_AIR && c == SURVIVAL_ITEM_STICK && d == BLOCK_AIR) {
+			*outCount = SurvivalTest_TierDurability(tier);
+			return SURVIVAL_TOOL_ID(SURVIVAL_TOOL_SHOVEL, tier);
+		}
+		/* Sword: air, material / air, stick */
+		if (a == BLOCK_AIR && b == mat && c == BLOCK_AIR && d == SURVIVAL_ITEM_STICK) {
+			*outCount = SurvivalTest_TierDurability(tier);
+			return SURVIVAL_TOOL_ID(SURVIVAL_TOOL_SWORD, tier);
+		}
+	}
+	*outCount = 0;
+	return BLOCK_AIR;
+}
+
 /* Sticks from planks: 2x2 empty, or via crafting */
 static BlockID SurvivalTest_TryCraft2x2Simple(BlockID a, BlockID b, BlockID c, BlockID d, int* outCount) {
+	BlockID tool = SurvivalTest_TryCraftTool(a, b, c, d, outCount);
+	if (tool != BLOCK_AIR) return tool;
+
 	/* Workbench: 4 planks -> 1 workbench (checked before sticks, since 4 planks also satisfy the stick pattern) */
 	if (a == BLOCK_WOOD && b == BLOCK_WOOD && c == BLOCK_WOOD && d == BLOCK_WOOD) {
 		*outCount = 1;
@@ -3140,6 +3199,13 @@ cc_bool SurvivalTest_TryCraft(void) {
 		if (c == BLOCK_COAL_ORE) st_craft2x2[2].count--;
 		if (b == SURVIVAL_ITEM_STICK) st_craft2x2[1].count--;
 	}
+	/* Tool: consume whichever of the 4 grid cells weren't left empty by the recipe */
+	else if (result >= SURVIVAL_ITEM_TOOL_BASE) {
+		if (a != BLOCK_AIR) st_craft2x2[0].count--;
+		if (b != BLOCK_AIR) st_craft2x2[1].count--;
+		if (c != BLOCK_AIR) st_craft2x2[2].count--;
+		if (d != BLOCK_AIR) st_craft2x2[3].count--;
+	}
 
 	/* Clear consumed ingredients */
 	for (i = 0; i < 4; i++) {
@@ -3152,14 +3218,36 @@ cc_bool SurvivalTest_TryCraft(void) {
 	return true;
 }
 
+/* Places a single tool instance with the given durability into the first empty slot. */
+/* Tools are never stacked with each other (count means "uses remaining", not quantity). */
+static void SurvivalTest_AddTool(BlockID tool, int durability) {
+	int i;
+	for (i = 0; i < SURVIVAL_INV_SLOTS; i++) {
+		if (st_inv[i].block != BLOCK_AIR) continue;
+		st_inv[i].block = tool;
+		st_inv[i].count = durability;
+		if (i < SURVIVAL_HOTBAR_SLOTS) HUDScreen_SetSlotPop(i, 5.0f);
+		SurvivalTest_SyncHotbar();
+		return;
+	}
+	/* Inventory full - drop is discarded */
+}
+
 /* Takes crafting result and adds it to inventory, then clears result slot. */
 void SurvivalTest_TakeCraftResult(void) {
 	int i;
 	if (!SurvivalTest_Enabled) return;
 	if (st_craftResult.block == BLOCK_AIR) return;
 
-	for (i = 0; i < st_craftResult.count; i++) {
-		SurvivalTest_AddBlock(st_craftResult.block);
+	/* Tools: result.count is durability (uses remaining), not a stack quantity - */
+	/*  place exactly one tool instance rather than looping AddBlock count times */
+	/*  (which would otherwise create that many separate 1-use tools). */
+	if (st_craftResult.block >= SURVIVAL_ITEM_TOOL_BASE) {
+		SurvivalTest_AddTool(st_craftResult.block, st_craftResult.count);
+	} else {
+		for (i = 0; i < st_craftResult.count; i++) {
+			SurvivalTest_AddBlock(st_craftResult.block);
+		}
 	}
 	st_craftResult.block = BLOCK_AIR;
 	st_craftResult.count = 0;
@@ -3285,19 +3373,31 @@ static cc_bool SurvivalTest_IsShovelBlock(BlockID block) {
 	return block == BLOCK_DIRT || block == BLOCK_GRASS || block == BLOCK_SAND || block == BLOCK_GRAVEL;
 }
 
-/* Gets the kind/tier of the tool currently held in the selected hotbar slot. */
-/* Returns false if the held item isn't a tool at all. */
-static cc_bool SurvivalTest_HeldTool(int* kind, int* tier) {
-	BlockID held = st_inv[Inventory.SelectedIndex].block;
+/* Gets the kind/tier of the given tool item ID. Returns false if it isn't a tool. */
+cc_bool SurvivalTest_ToolKindTier(BlockID block, int* kind, int* tier) {
 	int index;
-	if (held < SURVIVAL_ITEM_TOOL_BASE) return false;
+	if (block < SURVIVAL_ITEM_TOOL_BASE) return false;
 
-	index = held - SURVIVAL_ITEM_TOOL_BASE;
+	index = block - SURVIVAL_ITEM_TOOL_BASE;
 	if (index >= SURVIVAL_TOOL_KIND_COUNT * SURVIVAL_TIER_COUNT) return false;
 
 	*kind = index % SURVIVAL_TOOL_KIND_COUNT;
 	*tier = index / SURVIVAL_TOOL_KIND_COUNT;
 	return true;
+}
+
+/* Gets the max durability (full uses) of the given tool item ID, or 0 if not a tool. */
+int SurvivalTest_ToolMaxDurability(BlockID block) {
+	int kind, tier;
+	if (!SurvivalTest_ToolKindTier(block, &kind, &tier)) return 0;
+	return SurvivalTest_TierDurability(tier);
+}
+
+/* Gets the kind/tier of the tool currently held in the selected hotbar slot. */
+/* Returns false if the held item isn't a tool at all. */
+static cc_bool SurvivalTest_HeldTool(int* kind, int* tier) {
+	BlockID held = st_inv[Inventory.SelectedIndex].block;
+	return SurvivalTest_ToolKindTier(held, kind, tier);
 }
 
 /* Mining speed multiplier per tool tier - matching tools break blocks several times faster. */
