@@ -3072,6 +3072,63 @@ void SurvivalTest_SwapSlots(int a, int b) {
 	SurvivalTest_SyncHotbar();
 }
 
+/* Crafting grid accessor functions (slots 0-3 are 2x2 grid, 4 is result). */
+BlockID SurvivalTest_CraftSlotBlock(int slot) {
+	if (!SurvivalTest_Enabled || slot < 0 || slot > 4) return BLOCK_AIR;
+	if (slot == 4) return st_craftResult.block;
+	return st_craft2x2[slot].block;
+}
+
+int SurvivalTest_CraftSlotCount(int slot) {
+	if (!SurvivalTest_Enabled || slot < 0 || slot > 4) return 0;
+	if (slot == 4) return st_craftResult.count;
+	return st_craft2x2[slot].count;
+}
+
+void SurvivalTest_SetCraftSlot(int slot, BlockID block, int count) {
+	if (!SurvivalTest_Enabled || slot < 0 || slot > 4) return;
+	if (slot == 4) {
+		st_craftResult.block = block;
+		st_craftResult.count = block == BLOCK_AIR ? 0 : count;
+	} else {
+		st_craft2x2[slot].block = block;
+		st_craft2x2[slot].count = block == BLOCK_AIR ? 0 : count;
+	}
+	st_invVersion++;
+}
+
+/* Attempts to execute a craft with the current 2x2 grid. Returns true if successful. */
+cc_bool SurvivalTest_TryCraft(void) {
+	int outCount;
+	BlockID result;
+	if (!SurvivalTest_Enabled) return false;
+	if (st_craftResult.block != BLOCK_AIR) return false; /* result slot must be empty */
+
+	result = SurvivalTest_TryCraft2x2Simple(
+		st_craft2x2[0].block, st_craft2x2[1].block,
+		st_craft2x2[2].block, st_craft2x2[3].block,
+		&outCount);
+
+	if (result == BLOCK_AIR) return false;
+
+	/* Consume ingredients and produce result */
+	if (st_craft2x2[0].block == BLOCK_WOOD) st_craft2x2[0].count--;
+	if (st_craft2x2[1].block == BLOCK_WOOD) st_craft2x2[1].count--;
+	if (st_craft2x2[2].block == BLOCK_WOOD) st_craft2x2[2].count--;
+	if (st_craft2x2[3].block == BLOCK_WOOD) st_craft2x2[3].count--;
+
+	/* Clear consumed ingredients */
+	if (st_craft2x2[0].count <= 0) st_craft2x2[0].block = BLOCK_AIR;
+	if (st_craft2x2[1].count <= 0) st_craft2x2[1].block = BLOCK_AIR;
+	if (st_craft2x2[2].count <= 0) st_craft2x2[2].block = BLOCK_AIR;
+	if (st_craft2x2[3].count <= 0) st_craft2x2[3].block = BLOCK_AIR;
+
+	st_craftResult.block = result;
+	st_craftResult.count = outCount;
+	st_invVersion++;
+	return true;
+}
+
 /* Adds one of the given block: stacks onto an existing matching slot if */
 /*  possible, otherwise fills the first empty slot (hotbar slots first). */
 static void SurvivalTest_AddBlock(BlockID block) {

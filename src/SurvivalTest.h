@@ -99,6 +99,14 @@ int SurvivalTest_InvVersion(void);
 /* Swaps the contents of two inventory slots (no-op when survival is disabled). */
 void SurvivalTest_SwapSlots(int a, int b);
 
+/* Crafting grid access (0-3=grid slots, 4=result slot). */
+BlockID SurvivalTest_CraftSlotBlock(int slot);
+int SurvivalTest_CraftSlotCount(int slot);
+/* Sets a crafting slot (slot 0-4, block, count). Clears if block=AIR. */
+void SurvivalTest_SetCraftSlot(int slot, BlockID block, int count);
+/* Attempts to craft with the current 2x2 grid. Returns true if a recipe matched. */
+cc_bool SurvivalTest_TryCraft(void);
+
 /* Whether the player is allowed to place their currently selected block. */
 /* Returns true (always allowed) when survival mode is disabled. */
 cc_bool SurvivalTest_CanPlace(BlockID block);

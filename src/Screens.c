@@ -2396,6 +2396,9 @@ static struct SurvivalInvScreen {
 	int  slotSize;         /* current pixel size per slot */
 	int  panelX, panelY, panelW, panelH;
 	int  dollBoxX, dollBoxY, dollBoxSize;
+	int  craftGridX, craftGridY;  /* pixel origin of the 2x2 crafting grid */
+	int  craftResultX, craftResultY; /* pixel origin of the result slot */
+	int  heldCraftSlot;   /* held slot in crafting area (-1=nothing, 0-4=slot), or -1 */
 	int  mouseX, mouseY;   /* last known pointer position, or -1 if none yet */
 	int  countVertCount;
 	struct FontDesc  font;
@@ -2413,11 +2416,37 @@ static void SurvivalInv_SlotXY(struct SurvivalInvScreen* s, int slot, int* ox, i
 	*oy = s->gridY + row * s->slotSize;
 }
 
-/* Returns the slot index under screen coordinates (mx, my), or -1. */
+/* Returns the pixel origin (top-left corner) of a crafting grid slot (0-3) or result (4). */
+static void SurvivalInv_CraftSlotXY(struct SurvivalInvScreen* s, int slot, int* ox, int* oy) {
+	if (slot == 4) {
+		*ox = s->craftResultX;
+		*oy = s->craftResultY;
+	} else {
+		int col = slot % 2;
+		int row = slot / 2;
+		*ox = s->craftGridX + col * s->slotSize;
+		*oy = s->craftGridY + row * s->slotSize;
+	}
+}
+
+/* Returns the slot index (0-4 for crafting, or -1 for storage) under screen coordinates (mx, my). */
 static int SurvivalInv_HitSlot(struct SurvivalInvScreen* s, int mx, int my) {
 	int i, x, y;
+	/* Check storage slots first */
 	for (i = SURVIVAL_HOTBAR_SLOTS; i < SURVIVAL_INV_SLOTS; i++) {
 		SurvivalInv_SlotXY(s, i, &x, &y);
+		if (mx >= x && mx < x + s->slotSize &&
+		    my >= y && my < y + s->slotSize) return i;
+	}
+	return -1;
+}
+
+/* Returns the crafting slot index (0-4) under screen coordinates (mx, my), or -1. */
+static int SurvivalInv_HitCraftSlot(struct SurvivalInvScreen* s, int mx, int my) {
+	int i, x, y;
+	/* Check crafting grid (0-3) and result (4) */
+	for (i = 0; i <= 4; i++) {
+		SurvivalInv_CraftSlotXY(s, i, &x, &y);
 		if (mx >= x && mx < x + s->slotSize &&
 		    my >= y && my < y + s->slotSize) return i;
 	}
@@ -2535,6 +2564,14 @@ static void SurvivalInvScreen_BuildMesh(void* screen) {
 		IsometricDrawer_AddBatch(block, halfSize,
 			slotX + s->slotSize / 2, slotY + s->slotSize / 2);
 	}
+	/* Also render crafting grid (0-3) and result slot (4) */
+	for (i = 0; i <= 4; i++) {
+		block = SurvivalTest_CraftSlotBlock(i);
+		if (block == BLOCK_AIR) continue;
+		SurvivalInv_CraftSlotXY(s, i, &slotX, &slotY);
+		IsometricDrawer_AddBatch(block, halfSize,
+			slotX + s->slotSize / 2, slotY + s->slotSize / 2);
+	}
 	s->isoVertCount = IsometricDrawer_EndBatch();
 
 	/* Stack-count digit overlay for slots with count > 1 */
@@ -2546,6 +2583,15 @@ static void SurvivalInvScreen_BuildMesh(void* screen) {
 			count = SurvivalTest_SlotCount(i);
 			if (count <= 1) continue;
 			SurvivalInv_SlotXY(s, i, &slotX, &slotY);
+			s->countAtlas.tex.y = slotY + s->slotSize - s->countAtlas.tex.height - 2;
+			s->countAtlas.curX  = slotX + 2;
+			TextAtlas_AddInt(&s->countAtlas, count, &cur);
+		}
+		/* Also render crafting slot counts */
+		for (i = 0; i <= 4; i++) {
+			count = SurvivalTest_CraftSlotCount(i);
+			if (count <= 1) continue;
+			SurvivalInv_CraftSlotXY(s, i, &slotX, &slotY);
 			s->countAtlas.tex.y = slotY + s->slotSize - s->countAtlas.tex.height - 2;
 			s->countAtlas.curX  = slotX + 2;
 			TextAtlas_AddInt(&s->countAtlas, count, &cur);
@@ -2591,6 +2637,18 @@ static void SurvivalInvScreen_Render(void* screen, float delta) {
 		Gfx_Draw2DFlat(slotX + s->slotSize - 2, slotY + 1, 1, s->slotSize - 2, highlight);
 	}
 
+	/* Crafting grid slots (0-3) and result slot (4): same bevel style */
+	for (i = 0; i <= 4; i++) {
+		SurvivalInv_CraftSlotXY(s, i, &slotX, &slotY);
+		Gfx_Draw2DFlat(slotX,     slotY,     s->slotSize,     s->slotSize,
+		               i == s->heldCraftSlot ? heldFill : panelBorder);
+		if (i == s->heldCraftSlot) continue;
+
+		Gfx_Draw2DFlat(slotX + 1, slotY + 1, s->slotSize - 2, s->slotSize - 2, slotFill);
+		Gfx_Draw2DFlat(slotX + 1, slotY + s->slotSize - 2, s->slotSize - 2, 1, highlight);
+		Gfx_Draw2DFlat(slotX + s->slotSize - 2, slotY + 1, 1, s->slotSize - 2, highlight);
+	}
+
 	/* "Inventory" title above the panel */
 	if (s->titleTex.ID) {
 		s->titleTex.x = s->panelX + (s->panelW - s->titleTex.width) / 2;
@@ -2628,6 +2686,7 @@ static void SurvivalInvScreen_Init(void* screen) {
 	s->numWidgets  = 0;
 	s->maxWidgets  = 0;
 	s->heldSlot    = -1;
+	s->heldCraftSlot = -1;
 	s->mouseX      = -1;
 	s->mouseY      = -1;
 	s->maxVertices = SURVINV_TOTAL_VERTS;
@@ -2639,6 +2698,7 @@ static void SurvivalInvScreen_Init(void* screen) {
 static void SurvivalInvScreen_Free(void* screen) {
 	struct SurvivalInvScreen* s = (struct SurvivalInvScreen*)screen;
 	s->heldSlot = -1;
+	s->heldCraftSlot = -1;
 }
 
 static void SurvivalInvScreen_ContextLost(void* screen) {
@@ -2668,7 +2728,7 @@ static void SurvivalInvScreen_ContextRecreated(void* screen) {
 
 static void SurvivalInvScreen_Layout(void* screen) {
 	struct SurvivalInvScreen* s = (struct SurvivalInvScreen*)screen;
-	int storageW, storageH, gap, pad, topAreaH;
+	int storageW, storageH, gap, pad, topAreaH, craftGridW;
 
 	s->slotSize = Display_ScaleX((int)(SURVINV_SLOT_BASE * Gui_GetInventoryScale()));
 	if (s->slotSize < 16) s->slotSize = 16; /* minimum usable size */
@@ -2679,6 +2739,7 @@ static void SurvivalInvScreen_Layout(void* screen) {
 	storageW = SURVINV_STORAGE_COLS * s->slotSize;
 	storageH = SURVINV_STORAGE_ROWS * s->slotSize;
 	s->dollBoxSize = SURVINV_DOLL_UNITS * s->slotSize;
+	craftGridW = 2 * s->slotSize + gap;  /* 2x2 grid + gap + result slot */
 	topAreaH = s->dollBoxSize;
 
 	s->panelW = storageW + pad * 2;
@@ -2690,9 +2751,16 @@ static void SurvivalInvScreen_Layout(void* screen) {
 	s->dollBoxX = s->panelX + pad;
 	s->dollBoxY = s->panelY + pad;
 
+	/* Crafting grid to the right of the doll box */
+	s->craftGridX = s->panelX + pad + s->dollBoxSize + gap;
+	s->craftGridY = s->panelY + pad;
+	s->craftResultX = s->craftGridX + 2 * s->slotSize + gap;
+	s->craftResultY = s->craftGridY + s->slotSize;  /* center vertically */
+
 	s->gridX = s->panelX + pad;
 	s->gridY = s->panelY + pad + topAreaH + gap;
 
+	s->heldCraftSlot = -1;
 	s->dirty = true;
 }
 
@@ -2707,28 +2775,54 @@ static int SurvivalInvScreen_KeyDown(void* screen, int key, struct InputDevice* 
 
 static int SurvivalInvScreen_PointerDown(void* screen, int id, int x, int y) {
 	struct SurvivalInvScreen* s = (struct SurvivalInvScreen*)screen;
-	int hit = SurvivalInv_HitSlot(s, x, y);
+	int hitCraft = SurvivalInv_HitCraftSlot(s, x, y);
+	int hitStorage = SurvivalInv_HitSlot(s, x, y);
 
-	if (hit < 0) {
-		/* Clicked outside the grid - deselect and close */
-		s->heldSlot = -1;
-		Gui_Remove((struct Screen*)s);
+	/* Check crafting grid first */
+	if (hitCraft >= 0) {
+		if (s->heldCraftSlot < 0) {
+			/* Nothing held: pick up the slot if it has something */
+			if (SurvivalTest_CraftSlotBlock(hitCraft) != BLOCK_AIR)
+				s->heldCraftSlot = hitCraft;
+		} else if (s->heldCraftSlot == hitCraft) {
+			/* Clicked the same slot again: deselect */
+			s->heldCraftSlot = -1;
+		} else {
+			/* Different slot: swap the two crafting slots */
+			BlockID a_block = SurvivalTest_CraftSlotBlock(s->heldCraftSlot);
+			int a_count = SurvivalTest_CraftSlotCount(s->heldCraftSlot);
+			BlockID b_block = SurvivalTest_CraftSlotBlock(hitCraft);
+			int b_count = SurvivalTest_CraftSlotCount(hitCraft);
+			SurvivalTest_SetCraftSlot(s->heldCraftSlot, b_block, b_count);
+			SurvivalTest_SetCraftSlot(hitCraft, a_block, a_count);
+			s->heldCraftSlot = -1;
+			s->dirty = true;
+		}
 		return TOUCH_TYPE_GUI;
 	}
 
-	if (s->heldSlot < 0) {
-		/* Nothing held: pick up the slot if it has something */
-		if (SurvivalTest_SlotBlock(hit) != BLOCK_AIR)
-			s->heldSlot = hit;
-	} else if (s->heldSlot == hit) {
-		/* Clicked the same slot again: deselect */
-		s->heldSlot = -1;
-	} else {
-		/* Different slot: swap the two stacks */
-		SurvivalTest_SwapSlots(s->heldSlot, hit);
-		s->heldSlot = -1;
-		s->dirty    = true;
+	/* Check storage grid */
+	if (hitStorage >= 0) {
+		if (s->heldSlot < 0) {
+			/* Nothing held: pick up the slot if it has something */
+			if (SurvivalTest_SlotBlock(hitStorage) != BLOCK_AIR)
+				s->heldSlot = hitStorage;
+		} else if (s->heldSlot == hitStorage) {
+			/* Clicked the same slot again: deselect */
+			s->heldSlot = -1;
+		} else {
+			/* Different slot: swap the two stacks */
+			SurvivalTest_SwapSlots(s->heldSlot, hitStorage);
+			s->heldSlot = -1;
+			s->dirty    = true;
+		}
+		return TOUCH_TYPE_GUI;
 	}
+
+	/* Clicked outside the grid - deselect and close */
+	s->heldSlot = -1;
+	s->heldCraftSlot = -1;
+	Gui_Remove((struct Screen*)s);
 	return TOUCH_TYPE_GUI;
 }
 
