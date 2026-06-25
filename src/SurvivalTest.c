@@ -91,6 +91,52 @@ static cc_bool st_debugForceArmor;
 struct SurvivalSlot { BlockID block; cc_int16 count; };
 static struct SurvivalSlot st_inv[SURVIVAL_INV_SLOTS];
 static cc_bool SurvivalTest_HeldTool(int* kind, int* tier);
+
+/* Crafting system: recipes defined for 2x2 personal + 3x3 workbench. */
+/*  Recipes are checked by pattern matching (rotation-invariant for 2x2). */
+
+/* Helper: check if a 2x2 grid matches a recipe pattern (ignores empty slots) */
+static cc_bool SurvivalTest_Match2x2(struct SurvivalSlot grid[4],
+                                      BlockID a, BlockID b, BlockID c, BlockID d) {
+	if (grid[0].block == a && grid[1].block == b && grid[2].block == c && grid[3].block == d) return true;
+	/* 90° rotation: [0,1,2,3] -> [2,0,3,1] */
+	if (grid[2].block == a && grid[0].block == b && grid[3].block == c && grid[1].block == d) return true;
+	/* 180° rotation: [0,1,2,3] -> [3,2,1,0] */
+	if (grid[3].block == a && grid[2].block == b && grid[1].block == c && grid[0].block == d) return true;
+	/* 270° rotation: [0,1,2,3] -> [1,3,0,2] */
+	if (grid[1].block == a && grid[3].block == b && grid[0].block == c && grid[2].block == d) return true;
+	return false;
+}
+
+/* Try to craft from a 2x2 grid. Returns output block and count, or BLOCK_AIR if no match. */
+static BlockID SurvivalTest_TryCraft2x2(struct SurvivalSlot grid[4], int* outCount) {
+	/* Sticks: Planks stacked = Sticks (2x2 of 1 plank each -> 4 sticks) */
+	if (SurvivalTest_Match2x2(grid, BLOCK_WOOD, BLOCK_WOOD, BLOCK_WOOD, BLOCK_WOOD)) {
+		*outCount = 4;
+		return SURVIVAL_ITEM_STICK;
+	}
+	/* Workbench: 2x2 Planks -> Workbench */
+	if (SurvivalTest_Match2x2(grid, BLOCK_WOOD, BLOCK_WOOD, BLOCK_WOOD, BLOCK_WOOD)) {
+		*outCount = 1;
+		return SURVIVAL_BLOCK_WORKBENCH;
+	}
+	/* Sandstone: 2x2 Sand -> Sandstone */
+	if (SurvivalTest_Match2x2(grid, BLOCK_SAND, BLOCK_SAND, BLOCK_SAND, BLOCK_SAND)) {
+		*outCount = 1;
+		return BLOCK_GOLD;  /* Using gold block as placeholder for sandstone */
+	}
+	/* Torch: Coal + Stick (coal on top, stick below) -> 4 Torches */
+	if (SurvivalTest_Match2x2(grid, BLOCK_COAL_ORE, BLOCK_AIR, SURVIVAL_ITEM_STICK, BLOCK_AIR)) {
+		*outCount = 4;
+		return SURVIVAL_BLOCK_TORCH;
+	}
+
+	*outCount = 0;
+	return BLOCK_AIR;
+}
+
+static struct SurvivalSlot st_craft2x2[4];  /* personal crafting grid */
+static struct SurvivalSlot st_craftResult;  /* crafting output slot */
 /* Bumped on every inventory change so the HUD knows to redraw counts. */
 static int st_invVersion;
 static RNGState st_dropRng;
@@ -362,20 +408,19 @@ static cc_bool SurvivalTest_GetBlockDrop(BlockID oldBlock, BlockID* dropBlock, i
 		*dropBlock = BLOCK_COBBLE;
 		break;
 	case BLOCK_COAL_ORE:
-		/* OreBlock.getDrop(): coal ore is the one weird case - it yields a */
-		/*  stone SLAB, not coal (there's no separate coal item yet). Wiki */
-		/*  confirms this exact quirk ("stone slabs were obtained by mining */
-		/*  coal ore" in Survival Test). getDropCount() = 1-3 for all ores. */
-		*dropBlock = BLOCK_SLAB;
-		*count     = 1 + Random_Next(&st_dropRng, 3); /* 1-3 */
+		/* Coal ore drops coal for fuel (using the ore block as fuel item) */
+		*dropBlock = BLOCK_COAL_ORE;
+		*count     = 1;
 		break;
 	case BLOCK_GOLD_ORE:
-		*dropBlock = BLOCK_GOLD; /* OreBlock.getDrop(): gold ore -> gold block */
-		*count     = 1 + Random_Next(&st_dropRng, 3); /* 1-3 */
+		/* Gold ore drops gold ingots (Beta 1.7.3 style) */
+		*dropBlock = SURVIVAL_ITEM_INGOT_GOLD;
+		*count     = 1;
 		break;
 	case BLOCK_IRON_ORE:
-		*dropBlock = BLOCK_IRON; /* OreBlock.getDrop(): iron ore -> iron block */
-		*count     = 1 + Random_Next(&st_dropRng, 3); /* 1-3 */
+		/* Iron ore drops iron ingots (Beta 1.7.3 style) */
+		*dropBlock = SURVIVAL_ITEM_INGOT_IRON;
+		*count     = 1;
 		break;
 	case BLOCK_DOUBLE_SLAB:
 		*dropBlock = BLOCK_SLAB; /* SlabBlock.getDrop() always returns SLAB.id */
@@ -2451,11 +2496,12 @@ cc_bool SurvivalTest_TryAttackMob(void) {
 	HeldBlockRenderer_ClickAnim(true);
 
 	/* Player fist: flat 4 HP/hit, matching SurvivalTest_Hurt's own player-damage figure. */
-	/* A held sword roughly doubles this, scaling a little further by tier. */
+	/* A held sword scales by tier: wood=6, stone=7, iron=9, diamond=11, gold=10 HP. */
 	{
 		int kind, tier, damage = 4;
 		if (SurvivalTest_HeldTool(&kind, &tier) && kind == SURVIVAL_TOOL_SWORD) {
-			damage = 6 + tier * 2;
+			static const int swordDamage[SURVIVAL_TIER_COUNT] = { 6, 7, 9, 11, 10 };
+			damage = swordDamage[tier];
 		}
 		Mob_Hurt(best, e, damage, true);
 	}
@@ -3068,7 +3114,9 @@ static int SurvivalTest_Hardness(BlockID block);
 /* Blocks below their required tier cannot be mined at all - a hard gate, not slow mining. */
 static int SurvivalTest_BlockTier(BlockID block) {
 	switch (block) {
-		case BLOCK_GOLD_ORE: case BLOCK_OBSIDIAN:
+		case BLOCK_OBSIDIAN:
+			return SURVIVAL_TIER_DIAMOND;
+		case BLOCK_GOLD_ORE:
 			return SURVIVAL_TIER_GOLD;
 		case BLOCK_IRON_ORE:
 			return SURVIVAL_TIER_IRON;
@@ -3104,7 +3152,7 @@ static cc_bool SurvivalTest_HeldTool(int* kind, int* tier) {
 }
 
 /* Mining speed multiplier per tool tier - matching tools break blocks several times faster. */
-static const int toolSpeedMul[SURVIVAL_TIER_COUNT] = { 2, 3, 5, 6 };
+static const int toolSpeedMul[SURVIVAL_TIER_COUNT] = { 2, 3, 5, 8, 6 };
 
 /* Whether the currently held tool meets the required pickaxe tier for this block. */
 /* Tiered blocks (Stone/Iron Ore/etc) without the right tool aren't gated outright - */
@@ -3654,16 +3702,19 @@ static void SurvivalTest_OnContextLost(void* obj) {
 /* Tile coordinates (in the now-doubled-height terrain atlas) of every custom item/tool. */
 /* Must exactly match the modern_tiles[] entries added in Resources.c. */
 static TextureLoc SurvivalTest_ItemTile(BlockID item) {
+	int toolIndex;
 	if (item == SURVIVAL_ITEM_STICK)      return 16 * 16 + 9;
 	if (item == SURVIVAL_ITEM_INGOT_IRON) return 16 * 16 + 10;
 	if (item == SURVIVAL_ITEM_INGOT_GOLD) return 16 * 16 + 11;
-	/* tools: SURVIVAL_TOOL_ID(kind, tier) - base gives index 0-15, laid out in row 17 */
-	/*  in tier-major, kind-minor order (wood pick/axe/shovel/sword, stone .., ..) */
-	return 17 * 16 + (item - SURVIVAL_ITEM_TOOL_BASE);
+	/* tools: SURVIVAL_TOOL_ID(kind, tier) - index 0-19, laid out in rows 17-18 */
+	/*  in tier-major, kind-minor order (wood pick/axe/shovel/sword through diamond) */
+	toolIndex = item - SURVIVAL_ITEM_TOOL_BASE;
+	if (toolIndex < 16) return 17 * 16 + toolIndex;
+	else                return 18 * 16 + (toolIndex - 16);
 }
 
 static const char* const survivalItemNames[SURVIVAL_TOOL_KIND_COUNT] = { "Pickaxe", "Axe", "Shovel", "Sword" };
-static const char* const survivalTierNames[SURVIVAL_TIER_COUNT]      = { "Wood", "Stone", "Iron", "Gold" };
+static const char* const survivalTierNames[SURVIVAL_TIER_COUNT]      = { "Wood", "Stone", "Iron", "Diamond", "Gold" };
 
 /* Registers a single item/tool ID as a flat-sprite, non-collidable, non-placeable */
 /*  "block" so it can ride the existing block render/inventory pipeline unchanged */
@@ -3693,10 +3744,30 @@ static void SurvivalTest_RegisterItem(BlockID item, const cc_string* name) {
 	Inventory_Remove(item);
 }
 
+/* Register a placeable survival block */
+static void SurvivalTest_RegisterBlock(BlockID block, const cc_string* name, TextureLoc tex) {
+	Block_ResetProps(block);
+	Block_SetName(block, name);
+	Blocks.Collide[block] = COLLIDE_SOLID;
+	Blocks.Draw[block] = DRAW_OPAQUE;
+	Block_Tex(block, FACE_YMAX) = tex;
+	Block_Tex(block, FACE_YMIN) = tex;
+	Block_SetSide(tex, block);
+	Blocks.BlocksLight[block] = true;
+	Blocks.DigSounds[block] = SOUND_STONE;
+	Block_DefineCustom(block, false);
+	/* Unlike items, blocks should stay in creative mode inventory */
+}
+
 static void SurvivalTest_RegisterCustomBlocks(void) {
 	static const cc_string stickName = String_FromConst("Stick");
 	static const cc_string ironName  = String_FromConst("Iron Ingot");
 	static const cc_string goldName  = String_FromConst("Gold Ingot");
+	static const cc_string workbenchName = String_FromConst("Crafting Table");
+	static const cc_string furnaceName   = String_FromConst("Furnace");
+	static const cc_string chestName     = String_FromConst("Chest");
+	static const cc_string torchName     = String_FromConst("Torch");
+	static const cc_string doorName      = String_FromConst("Wooden Door");
 	cc_string name;
 	char nameBuf[STRING_SIZE];
 	int kind, tier;
@@ -3712,6 +3783,13 @@ static void SurvivalTest_RegisterCustomBlocks(void) {
 			SurvivalTest_RegisterItem(SURVIVAL_TOOL_ID(kind, tier), &name);
 		}
 	}
+
+	/* Register placeable blocks */
+	SurvivalTest_RegisterBlock(SURVIVAL_BLOCK_WORKBENCH, &workbenchName, 16 * 16 + 0);
+	SurvivalTest_RegisterBlock(SURVIVAL_BLOCK_FURNACE_OFF, &furnaceName,  16 * 16 + 2);
+	SurvivalTest_RegisterBlock(SURVIVAL_BLOCK_CHEST, &chestName,      16 * 16 + 8);
+	SurvivalTest_RegisterBlock(SURVIVAL_BLOCK_TORCH, &torchName,      16 * 16 + 6);
+	SurvivalTest_RegisterBlock(SURVIVAL_BLOCK_DOOR_CLOSED, &doorName, 16 * 16 + 7);
 }
 
 static void SurvivalTest_Init(void) {

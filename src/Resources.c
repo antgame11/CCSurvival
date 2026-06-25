@@ -992,6 +992,11 @@ static const struct TilePatch { const char* name; cc_uint8 x1,y1, x2,y2; } moder
 	{ "assets/minecraft/textures/items/gold_axe.png",      13,17 },
 	{ "assets/minecraft/textures/items/gold_shovel.png",   14,17 },
 	{ "assets/minecraft/textures/items/gold_sword.png",    15,17 },
+	/* Diamond tools in row 18 */
+	{ "assets/minecraft/textures/items/diamond_pickaxe.png", 0,18 },
+	{ "assets/minecraft/textures/items/diamond_axe.png",     1,18 },
+	{ "assets/minecraft/textures/items/diamond_shovel.png",  2,18 },
+	{ "assets/minecraft/textures/items/diamond_sword.png",   3,18 },
 };
 
 CC_NOINLINE static const struct TilePatch* ModernPatcher_GetTile(const cc_string* path) {

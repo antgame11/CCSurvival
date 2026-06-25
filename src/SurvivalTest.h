@@ -61,9 +61,8 @@ enum SurvivalItemID {
 
 /* Tool kind - what the tool is used for. */
 enum SurvivalToolKind { SURVIVAL_TOOL_PICKAXE, SURVIVAL_TOOL_AXE, SURVIVAL_TOOL_SHOVEL, SURVIVAL_TOOL_SWORD, SURVIVAL_TOOL_KIND_COUNT };
-/* Tool tier - what material the tool is made of. Gold is treated as the best */
-/*  tier here, deliberately deviating from real Minecraft's gold-is-weak quirk. */
-enum SurvivalToolTier { SURVIVAL_TIER_WOOD, SURVIVAL_TIER_STONE, SURVIVAL_TIER_IRON, SURVIVAL_TIER_GOLD, SURVIVAL_TIER_COUNT };
+/* Tool tier - what material the tool is made of. */
+enum SurvivalToolTier { SURVIVAL_TIER_WOOD, SURVIVAL_TIER_STONE, SURVIVAL_TIER_IRON, SURVIVAL_TIER_DIAMOND, SURVIVAL_TIER_GOLD, SURVIVAL_TIER_COUNT };
 
 /* Computes the item ID for a given tool kind/tier (4 kinds x 4 tiers, base 110). */
 #define SURVIVAL_TOOL_ID(kind, tier) (SURVIVAL_ITEM_TOOL_BASE + (tier) * SURVIVAL_TOOL_KIND_COUNT + (kind))
