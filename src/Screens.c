@@ -2715,6 +2715,41 @@ static void SurvivalInvScreen_Layout(void* screen) {
 	s->dirty = true;
 }
 
+/* Computes the resulting (source, destination) stacks after placing a held item */
+/*  onto a slot, matching Minecraft's click rules: left click places the entire   */
+/*  held stack (merging onto a matching stack, up to SURVIVAL_STACK_MAX, with any */
+/*  overflow staying held), right click places exactly 1 unit. Placing onto a     */
+/*  stack of a different item type swaps the two stacks entirely on left click,   */
+/*  and does nothing on right click (can't drop a single item onto a mismatched   */
+/*  stack). srcBlock/dstBlock may be BLOCK_AIR (empty slot/empty hand). */
+static void SurvivalInv_ComputePlace(BlockID srcBlock, int srcCount, BlockID dstBlock, int dstCount,
+                                      cc_bool rightClick,
+                                      BlockID* outSrcBlock, int* outSrcCount,
+                                      BlockID* outDstBlock, int* outDstCount) {
+	if (dstBlock == BLOCK_AIR || dstBlock == srcBlock) {
+		int room   = SURVIVAL_STACK_MAX - dstCount;
+		int amount = rightClick ? 1 : srcCount;
+		if (amount > room) amount = room;
+		if (amount < 0)    amount = 0;
+
+		dstCount += amount;
+		srcCount -= amount;
+
+		*outDstBlock = dstCount > 0 ? srcBlock : BLOCK_AIR;
+		*outDstCount = dstCount;
+		*outSrcBlock = srcCount > 0 ? srcBlock : BLOCK_AIR;
+		*outSrcCount = srcCount;
+	} else if (rightClick) {
+		/* Different item already occupies the slot: right click can't drop 1 onto it */
+		*outSrcBlock = srcBlock; *outSrcCount = srcCount;
+		*outDstBlock = dstBlock; *outDstCount = dstCount;
+	} else {
+		/* Left click on a fully different stack: swap the two stacks entirely */
+		*outSrcBlock = dstBlock; *outSrcCount = dstCount;
+		*outDstBlock = srcBlock; *outDstCount = srcCount;
+	}
+}
+
 static int SurvivalInvScreen_KeyDown(void* screen, int key, struct InputDevice* device) {
 	struct SurvivalInvScreen* s = (struct SurvivalInvScreen*)screen;
 	if (InputBind_Claims(BIND_INVENTORY, key, device) || key == CCKEY_ESCAPE) {
@@ -2728,6 +2763,10 @@ static int SurvivalInvScreen_PointerDown(void* screen, int id, int x, int y) {
 	struct SurvivalInvScreen* s = (struct SurvivalInvScreen*)screen;
 	int hitCraft = SurvivalInv_HitCraftSlot(s, x, y);
 	int hitStorage = SurvivalInv_HitSlot(s, x, y);
+	/* Right click places exactly 1 item; left click places (and merges/stacks) the whole held stack. */
+	cc_bool rightClick = Input.Pressed[CCMOUSE_R];
+	BlockID newSrcBlock, newDstBlock;
+	int newSrcCount, newDstCount;
 
 	/* Check crafting grid first */
 	if (hitCraft >= 0) {
@@ -2747,21 +2786,11 @@ static int SurvivalInvScreen_PointerDown(void* screen, int id, int x, int y) {
 			BlockID cblock = SurvivalTest_CraftSlotBlock(hitCraft);
 			int ccount = SurvivalTest_CraftSlotCount(hitCraft);
 
-			if (cblock == BLOCK_AIR || cblock == sblock) {
-				/* Place exactly 1 unit into the craft slot, keep holding the rest */
-				SurvivalTest_SetCraftSlot(hitCraft, sblock, ccount + 1);
-				if (scount - 1 <= 0) {
-					SurvivalTest_SetInvSlot(s->heldSlot, BLOCK_AIR, 0);
-					s->heldSlot = -1;
-				} else {
-					SurvivalTest_SetInvSlot(s->heldSlot, sblock, scount - 1);
-				}
-			} else {
-				/* Different item type already in slot: swap the two stacks instead */
-				SurvivalTest_SetCraftSlot(hitCraft, sblock, scount);
-				SurvivalTest_SetInvSlot(s->heldSlot, cblock, ccount);
-				s->heldSlot = -1;
-			}
+			SurvivalInv_ComputePlace(sblock, scount, cblock, ccount, rightClick,
+				&newSrcBlock, &newSrcCount, &newDstBlock, &newDstCount);
+			SurvivalTest_SetCraftSlot(hitCraft, newDstBlock, newDstCount);
+			SurvivalTest_SetInvSlot(s->heldSlot, newSrcBlock, newSrcCount);
+			if (newSrcCount <= 0) s->heldSlot = -1;
 			s->dirty = true;
 			/* After placing items, try to auto-execute any matching recipe */
 			SurvivalTest_TryCraft();
@@ -2779,14 +2808,17 @@ static int SurvivalInvScreen_PointerDown(void* screen, int id, int x, int y) {
 			s->heldCraftSlot = -1;
 			s->dirty = true;
 		} else {
-			/* Different slot: swap the two crafting slots */
+			/* Different slot: place/merge/swap the two crafting slots */
 			BlockID a_block = SurvivalTest_CraftSlotBlock(s->heldCraftSlot);
 			int a_count = SurvivalTest_CraftSlotCount(s->heldCraftSlot);
 			BlockID b_block = SurvivalTest_CraftSlotBlock(hitCraft);
 			int b_count = SurvivalTest_CraftSlotCount(hitCraft);
-			SurvivalTest_SetCraftSlot(s->heldCraftSlot, b_block, b_count);
-			SurvivalTest_SetCraftSlot(hitCraft, a_block, a_count);
-			s->heldCraftSlot = -1;
+
+			SurvivalInv_ComputePlace(a_block, a_count, b_block, b_count, rightClick,
+				&newSrcBlock, &newSrcCount, &newDstBlock, &newDstCount);
+			SurvivalTest_SetCraftSlot(hitCraft, newDstBlock, newDstCount);
+			SurvivalTest_SetCraftSlot(s->heldCraftSlot, newSrcBlock, newSrcCount);
+			if (newSrcCount <= 0) s->heldCraftSlot = -1;
 			s->dirty = true;
 			/* After placing items, try to auto-execute any matching recipe */
 			SurvivalTest_TryCraft();
@@ -2796,17 +2828,18 @@ static int SurvivalInvScreen_PointerDown(void* screen, int id, int x, int y) {
 
 	/* Check storage grid */
 	if (hitStorage >= 0) {
-		/* If holding a crafting item, swap with storage slot */
+		/* If holding a crafting item, place/merge/swap with storage slot */
 		if (s->heldCraftSlot >= 0) {
 			BlockID cblock = SurvivalTest_CraftSlotBlock(s->heldCraftSlot);
 			int ccount = SurvivalTest_CraftSlotCount(s->heldCraftSlot);
 			BlockID sblock = SurvivalTest_SlotBlock(hitStorage);
 			int scount = SurvivalTest_SlotCount(hitStorage);
 
-			/* Swap craft slot with storage slot */
-			SurvivalTest_SetCraftSlot(s->heldCraftSlot, sblock, scount);
-			SurvivalTest_SetInvSlot(hitStorage, cblock, ccount);
-			s->heldCraftSlot = -1;
+			SurvivalInv_ComputePlace(cblock, ccount, sblock, scount, rightClick,
+				&newSrcBlock, &newSrcCount, &newDstBlock, &newDstCount);
+			SurvivalTest_SetInvSlot(hitStorage, newDstBlock, newDstCount);
+			SurvivalTest_SetCraftSlot(s->heldCraftSlot, newSrcBlock, newSrcCount);
+			if (newSrcCount <= 0) s->heldCraftSlot = -1;
 			s->dirty = true;
 			return TOUCH_TYPE_GUI;
 		}
@@ -2821,9 +2854,17 @@ static int SurvivalInvScreen_PointerDown(void* screen, int id, int x, int y) {
 			s->heldSlot = -1;
 			s->dirty = true;
 		} else {
-			/* Different slot: swap the two stacks */
-			SurvivalTest_SwapSlots(s->heldSlot, hitStorage);
-			s->heldSlot = -1;
+			/* Different slot: place/merge/swap the two stacks */
+			BlockID a_block = SurvivalTest_SlotBlock(s->heldSlot);
+			int a_count = SurvivalTest_SlotCount(s->heldSlot);
+			BlockID b_block = SurvivalTest_SlotBlock(hitStorage);
+			int b_count = SurvivalTest_SlotCount(hitStorage);
+
+			SurvivalInv_ComputePlace(a_block, a_count, b_block, b_count, rightClick,
+				&newSrcBlock, &newSrcCount, &newDstBlock, &newDstCount);
+			SurvivalTest_SetInvSlot(hitStorage, newDstBlock, newDstCount);
+			SurvivalTest_SetInvSlot(s->heldSlot, newSrcBlock, newSrcCount);
+			if (newSrcCount <= 0) s->heldSlot = -1;
 			s->dirty    = true;
 		}
 		return TOUCH_TYPE_GUI;
