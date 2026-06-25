@@ -33,6 +33,41 @@ extern int SurvivalTest_Health;
 /* Number of inventory slots that make up the hotbar. */
 #define SURVIVAL_HOTBAR_SLOTS 9
 
+/* Custom placeable block IDs added by Survival Test's crafting system. */
+/* (66-767 are free per EXTENDED_BLOCKS - see Block_DefineCustom callers.) */
+enum SurvivalBlockID {
+	SURVIVAL_BLOCK_WORKBENCH    = 80,
+	SURVIVAL_BLOCK_FURNACE_OFF  = 81,
+	SURVIVAL_BLOCK_FURNACE_ON   = 82,
+	SURVIVAL_BLOCK_CHEST        = 83,
+	SURVIVAL_BLOCK_TORCH        = 84,
+	SURVIVAL_BLOCK_DOOR_CLOSED  = 85,
+	SURVIVAL_BLOCK_DOOR_OPEN    = 86
+};
+
+/* Non-placeable item IDs (sticks, ingots, tools). Registered as DRAW_SPRITE */
+/*  custom "blocks" so they reuse the existing block render/inventory pipeline, */
+/*  but are rejected by SurvivalTest_CanPlace. */
+enum SurvivalItemID {
+	SURVIVAL_ITEM_STICK       = 100,
+	SURVIVAL_ITEM_INGOT_IRON  = 101,
+	SURVIVAL_ITEM_INGOT_GOLD  = 102,
+	SURVIVAL_ITEM_TOOL_BASE   = 110
+	/* tool IDs run SURVIVAL_ITEM_TOOL_BASE .. SURVIVAL_ITEM_TOOL_BASE+15, see SURVIVAL_TOOL_ID */
+};
+
+/* First item ID - any block >= this is an item/tool and can never be placed. */
+#define SURVIVAL_FIRST_ITEM_ID SURVIVAL_ITEM_STICK
+
+/* Tool kind - what the tool is used for. */
+enum SurvivalToolKind { SURVIVAL_TOOL_PICKAXE, SURVIVAL_TOOL_AXE, SURVIVAL_TOOL_SHOVEL, SURVIVAL_TOOL_SWORD, SURVIVAL_TOOL_KIND_COUNT };
+/* Tool tier - what material the tool is made of. Gold is treated as the best */
+/*  tier here, deliberately deviating from real Minecraft's gold-is-weak quirk. */
+enum SurvivalToolTier { SURVIVAL_TIER_WOOD, SURVIVAL_TIER_STONE, SURVIVAL_TIER_IRON, SURVIVAL_TIER_GOLD, SURVIVAL_TIER_COUNT };
+
+/* Computes the item ID for a given tool kind/tier (4 kinds x 4 tiers, base 110). */
+#define SURVIVAL_TOOL_ID(kind, tier) (SURVIVAL_ITEM_TOOL_BASE + (tier) * SURVIVAL_TOOL_KIND_COUNT + (kind))
+
 /* Applies damage to the player (respects invincibility frames). */
 /* hurtDir (for the hurt camera tilt) is randomised, matching the original's */
 /*  hurt(null, damage) call sites (environmental damage - fall/lava/etc). */

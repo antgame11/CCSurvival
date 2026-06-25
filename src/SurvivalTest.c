@@ -27,6 +27,7 @@
 #include "Gui.h"
 #include "Picking.h"
 #include "Particle.h"
+#include "String_.h"
 
 /* Classic 0.30 Survival Test gamemode implementation.
    Copyright 2014-2025 ClassiCube | Licensed under BSD-3
@@ -89,6 +90,7 @@ static cc_bool st_debugForceArmor;
 /* Slot-based inventory: slots 0..8 are the hotbar, 9..35 are storage. */
 struct SurvivalSlot { BlockID block; cc_int16 count; };
 static struct SurvivalSlot st_inv[SURVIVAL_INV_SLOTS];
+static cc_bool SurvivalTest_HeldTool(int* kind, int* tier);
 /* Bumped on every inventory change so the HUD knows to redraw counts. */
 static int st_invVersion;
 static RNGState st_dropRng;
@@ -2448,8 +2450,15 @@ cc_bool SurvivalTest_TryAttackMob(void) {
 	/*  attack a mob, so trigger the same swing here to match. */
 	HeldBlockRenderer_ClickAnim(true);
 
-	/* Player fist: flat 4 HP/hit, matching SurvivalTest_Hurt's own player-damage figure */
-	Mob_Hurt(best, e, 4, true);
+	/* Player fist: flat 4 HP/hit, matching SurvivalTest_Hurt's own player-damage figure. */
+	/* A held sword roughly doubles this, scaling a little further by tier. */
+	{
+		int kind, tier, damage = 4;
+		if (SurvivalTest_HeldTool(&kind, &tier) && kind == SURVIVAL_TOOL_SWORD) {
+			damage = 6 + tier * 2;
+		}
+		Mob_Hurt(best, e, damage, true);
+	}
 	return true;
 }
 
@@ -2936,6 +2945,8 @@ int     SurvivalTest_InvVersion(void) { return st_invVersion; }
 
 cc_bool SurvivalTest_CanPlace(BlockID block) {
 	if (!SurvivalTest_Enabled) return true;
+	/* Items/tools are never placeable - only real blocks */
+	if (block >= SURVIVAL_FIRST_ITEM_ID) return false;
 	/* Placement always uses the selected hotbar slot */
 	return st_inv[Inventory.SelectedIndex].count > 0;
 }
@@ -3020,13 +3031,20 @@ cc_bool SurvivalTest_TryEat(void) {
 	return true;
 }
 
+/* Set right before breaking a tiered block (Stone/Iron Ore/etc) without a high enough */
+/*  pickaxe tier - it still breaks, just slowly, but yields no drop (matching vanilla's */
+/*  no-correct-tool behaviour), checked once by SurvivalTest_BlockChanged below. */
+static cc_bool st_breakNoDrop;
+
 static void SurvivalTest_BlockChanged(void* obj,
 									  IVec3 coords, BlockID oldBlock, BlockID block) {
 	if (!SurvivalTest_Enabled) return;
 
 	if (block == BLOCK_AIR) {
-		/* Block was mined - spawn its physical drop(s) on the ground */
-		SurvivalTest_SpawnDropsForBlock(coords, oldBlock);
+		/* Block was mined - spawn its physical drop(s) on the ground (unless mined */
+		/*  without the required tool tier) */
+		if (!st_breakNoDrop) SurvivalTest_SpawnDropsForBlock(coords, oldBlock);
+		st_breakNoDrop = false;
 	} else {
 		/* Block was placed - consume one from the selected hotbar slot */
 		SurvivalTest_ConsumeSelected();
@@ -3044,6 +3062,97 @@ static void SurvivalTest_BlockChanged(void* obj,
 /*  than waiting for the continuous per-tick path below). Blocks with no explicit */
 /*  c0.30 hardness (i.e. CPE-era blocks that didn't exist yet) default to instant, */
 /*  matching this engine's pre-existing creative-style behaviour for them. */
+static int SurvivalTest_Hardness(BlockID block);
+
+/* Minimum pickaxe tier needed to mine this block at all (0 = hand-minable). */
+/* Blocks below their required tier cannot be mined at all - a hard gate, not slow mining. */
+static int SurvivalTest_BlockTier(BlockID block) {
+	switch (block) {
+		case BLOCK_GOLD_ORE: case BLOCK_OBSIDIAN:
+			return SURVIVAL_TIER_GOLD;
+		case BLOCK_IRON_ORE:
+			return SURVIVAL_TIER_IRON;
+		case BLOCK_STONE: case BLOCK_COBBLE: case BLOCK_COAL_ORE: case BLOCK_MOSSY_ROCKS:
+		case BLOCK_BRICK: case BLOCK_SLAB: case BLOCK_DOUBLE_SLAB:
+			return SURVIVAL_TIER_STONE;
+		default:
+			return 0;
+	}
+}
+
+/* Whether the given block is mined faster by an axe or shovel (rather than a pickaxe). */
+static cc_bool SurvivalTest_IsAxeBlock(BlockID block) {
+	return block == BLOCK_LOG || block == BLOCK_WOOD || block == BLOCK_BOOKSHELF;
+}
+static cc_bool SurvivalTest_IsShovelBlock(BlockID block) {
+	return block == BLOCK_DIRT || block == BLOCK_GRASS || block == BLOCK_SAND || block == BLOCK_GRAVEL;
+}
+
+/* Gets the kind/tier of the tool currently held in the selected hotbar slot. */
+/* Returns false if the held item isn't a tool at all. */
+static cc_bool SurvivalTest_HeldTool(int* kind, int* tier) {
+	BlockID held = st_inv[Inventory.SelectedIndex].block;
+	int index;
+	if (held < SURVIVAL_ITEM_TOOL_BASE) return false;
+
+	index = held - SURVIVAL_ITEM_TOOL_BASE;
+	if (index >= SURVIVAL_TOOL_KIND_COUNT * SURVIVAL_TIER_COUNT) return false;
+
+	*kind = index % SURVIVAL_TOOL_KIND_COUNT;
+	*tier = index / SURVIVAL_TOOL_KIND_COUNT;
+	return true;
+}
+
+/* Mining speed multiplier per tool tier - matching tools break blocks several times faster. */
+static const int toolSpeedMul[SURVIVAL_TIER_COUNT] = { 2, 3, 5, 6 };
+
+/* Whether the currently held tool meets the required pickaxe tier for this block. */
+/* Tiered blocks (Stone/Iron Ore/etc) without the right tool aren't gated outright - */
+/*  they just break much slower and yield no drop, matching vanilla's behaviour. */
+static cc_bool SurvivalTest_HasRequiredTier(BlockID block) {
+	int kind, tier, required = SurvivalTest_BlockTier(block);
+	if (required == 0) return true;
+
+	if (!SurvivalTest_HeldTool(&kind, &tier)) return false;
+	return kind == SURVIVAL_TOOL_PICKAXE && tier >= required;
+}
+
+/* Penalty divisor applied to mining speed when a tiered block is hit without the */
+/*  required pickaxe tier (or by hand) - it still breaks, just much slower. */
+#define SURVIVAL_WRONG_TOOL_PENALTY 5
+
+/* Effective hardness once the held tool's speed bonus/penalty is applied. */
+static int SurvivalTest_EffectiveHardness(BlockID block) {
+	int kind, tier, hardness = SurvivalTest_Hardness(block);
+	int required = SurvivalTest_BlockTier(block);
+	cc_bool matches;
+
+	if (required > 0 && !SurvivalTest_HasRequiredTier(block)) {
+		return hardness * SURVIVAL_WRONG_TOOL_PENALTY;
+	}
+	if (!SurvivalTest_HeldTool(&kind, &tier)) return hardness;
+
+	if (required > 0)                           matches = kind == SURVIVAL_TOOL_PICKAXE;
+	else if (SurvivalTest_IsAxeBlock(block))     matches = kind == SURVIVAL_TOOL_AXE;
+	else if (SurvivalTest_IsShovelBlock(block))  matches = kind == SURVIVAL_TOOL_SHOVEL;
+	else matches = false;
+
+	if (!matches) return hardness;
+	return hardness / toolSpeedMul[tier];
+}
+
+/* Decrements durability (SurvivalSlot.count doubling as "uses remaining" for tools) */
+/*  on the currently held tool, removing it once it reaches 0. No-op if not holding a tool. */
+static void SurvivalTest_DamageHeldTool(void) {
+	int slot = Inventory.SelectedIndex;
+	int kind, tier;
+	if (!SurvivalTest_HeldTool(&kind, &tier)) return;
+
+	st_inv[slot].count--;
+	if (st_inv[slot].count <= 0) st_inv[slot].block = BLOCK_AIR;
+	SurvivalTest_SyncHotbar();
+}
+
 static int SurvivalTest_Hardness(BlockID block) {
 	switch (block) {
 		case BLOCK_STONE:       return 20;  /* 1.0s */
@@ -3100,7 +3209,7 @@ float SurvivalTest_BreakProgress(void) {
 	int hardness;
 	if (!st_breaking || st_breakHits <= 0) return 0.0f;
 
-	hardness = SurvivalTest_Hardness(World_GetBlock(st_breakPos.x, st_breakPos.y, st_breakPos.z));
+	hardness = SurvivalTest_EffectiveHardness(World_GetBlock(st_breakPos.x, st_breakPos.y, st_breakPos.z));
 	return (float)st_breakHits / (float)(hardness + 1);
 }
 
@@ -3139,12 +3248,16 @@ static void SurvivalTest_TickBreaking(void) {
 			st_breaking = false; st_breakHits = 0; return;
 		}
 
-		hardness = SurvivalTest_Hardness(block);
+		hardness = SurvivalTest_EffectiveHardness(block);
 		st_breakHits++;
 		if (st_breakHits >= hardness + 1) {
 			old = block;
+			/* Tiered blocks (Stone/Iron Ore/etc) mined without the required pickaxe */
+			/*  tier still break, just slowly (above), and yield no drop. */
+			st_breakNoDrop = SurvivalTest_BlockTier(block) > 0 && !SurvivalTest_HasRequiredTier(block);
 			Game_ChangeBlock(pos.x, pos.y, pos.z, BLOCK_AIR);
 			Event_RaiseBlock(&UserEvents.BlockChanged, pos, old, BLOCK_AIR);
+			SurvivalTest_DamageHeldTool();
 
 			st_breaking   = false;
 			st_breakHits  = 0;
@@ -3535,6 +3648,72 @@ static void SurvivalTest_OnContextLost(void* obj) {
 	}
 }
 
+/*########################################################################################################################*
+*--------------------------------------------------Crafting items/tools---------------------------------------------------*
+*#########################################################################################################################*/
+/* Tile coordinates (in the now-doubled-height terrain atlas) of every custom item/tool. */
+/* Must exactly match the modern_tiles[] entries added in Resources.c. */
+static TextureLoc SurvivalTest_ItemTile(BlockID item) {
+	if (item == SURVIVAL_ITEM_STICK)      return 16 * 16 + 9;
+	if (item == SURVIVAL_ITEM_INGOT_IRON) return 16 * 16 + 10;
+	if (item == SURVIVAL_ITEM_INGOT_GOLD) return 16 * 16 + 11;
+	/* tools: SURVIVAL_TOOL_ID(kind, tier) - base gives index 0-15, laid out in row 17 */
+	/*  in tier-major, kind-minor order (wood pick/axe/shovel/sword, stone .., ..) */
+	return 17 * 16 + (item - SURVIVAL_ITEM_TOOL_BASE);
+}
+
+static const char* const survivalItemNames[SURVIVAL_TOOL_KIND_COUNT] = { "Pickaxe", "Axe", "Shovel", "Sword" };
+static const char* const survivalTierNames[SURVIVAL_TIER_COUNT]      = { "Wood", "Stone", "Iron", "Gold" };
+
+/* Registers a single item/tool ID as a flat-sprite, non-collidable, non-placeable */
+/*  "block" so it can ride the existing block render/inventory pipeline unchanged */
+/*  (see IsometricDrawer's DRAW_SPRITE special-case). Mirrors the canonical field */
+/*  sequence used by the real CPE block-def handler (Protocol.c BlockDefs_DefineBlockCommonStart/End). */
+static void SurvivalTest_RegisterItem(BlockID item, const cc_string* name) {
+	TextureLoc tex = SurvivalTest_ItemTile(item);
+
+	Block_ResetProps(item);
+	Block_SetName(item, name);
+	Blocks.Collide[item]         = COLLIDE_NONE;
+	Blocks.ExtendedCollide[item] = COLLIDE_NONE;
+	Block_Tex(item, FACE_YMAX) = tex;
+	Block_Tex(item, FACE_YMIN) = tex;
+	Block_SetSide(tex, item);
+	Blocks.BlocksLight[item] = false;
+	Blocks.DigSounds[item]   = SOUND_NONE;
+	Blocks.StepSounds[item]  = SOUND_NONE;
+	Blocks.Brightness[item]  = 0;
+	Vec3_Set(Blocks.MinBB[item], 2.50f/16.0f, 0, 2.50f/16.0f);
+	Vec3_Set(Blocks.MaxBB[item], 13.5f/16.0f, 1, 13.5f/16.0f);
+	Blocks.Draw[item] = DRAW_SPRITE;
+
+	Block_DefineCustom(item, true);
+	/* Block_DefineCustom always calls Inventory_AddDefault - undo it so items/tools */
+	/*  stay out of creative mode's block picker, only reachable via survival crafting. */
+	Inventory_Remove(item);
+}
+
+static void SurvivalTest_RegisterCustomBlocks(void) {
+	static const cc_string stickName = String_FromConst("Stick");
+	static const cc_string ironName  = String_FromConst("Iron Ingot");
+	static const cc_string goldName  = String_FromConst("Gold Ingot");
+	cc_string name;
+	char nameBuf[STRING_SIZE];
+	int kind, tier;
+
+	SurvivalTest_RegisterItem(SURVIVAL_ITEM_STICK,      &stickName);
+	SurvivalTest_RegisterItem(SURVIVAL_ITEM_INGOT_IRON, &ironName);
+	SurvivalTest_RegisterItem(SURVIVAL_ITEM_INGOT_GOLD, &goldName);
+
+	for (tier = 0; tier < SURVIVAL_TIER_COUNT; tier++) {
+		for (kind = 0; kind < SURVIVAL_TOOL_KIND_COUNT; kind++) {
+			name.buffer = nameBuf; name.length = 0; name.capacity = STRING_SIZE;
+			String_Format2(&name, "%c %c", survivalTierNames[tier], survivalItemNames[kind]);
+			SurvivalTest_RegisterItem(SURVIVAL_TOOL_ID(kind, tier), &name);
+		}
+	}
+}
+
 static void SurvivalTest_Init(void) {
 	/* Loaded unconditionally so the inventory screen can read it even before */
 	/*  any survival logic runs (it gates a UI choice, not a gameplay rule). */
@@ -3543,6 +3722,7 @@ static void SurvivalTest_Init(void) {
 	SurvivalTest_Enabled = Options_GetBool(OPT_SURVIVAL_MODE, false);
 	if (!SurvivalTest_Enabled) return;
 
+	SurvivalTest_RegisterCustomBlocks();
 	Random_SeedFromCurrentTime(&st_dropRng);
 	Random_SeedFromCurrentTime(&st_mobRng);
 	Random_SeedFromCurrentTime(&st_arrowRng);

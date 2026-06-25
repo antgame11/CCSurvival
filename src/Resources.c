@@ -911,7 +911,18 @@ static cc_result ClassicPatcher_ProcessEntry(const cc_string* path, struct Strea
 
 	/* terrain.png requires special handling */
 	if (String_CaselessEqualsConst(path, "terrain.png")) {
-		return Png_Decode(&e->value.bmp, data);
+		struct Bitmap tmp;
+		cc_result res = Png_Decode(&tmp, data);
+		if (res) return res;
+
+		/* double the atlas height, leaving the bottom half blank for survival's custom tiles */
+		Bitmap_Allocate(&e->value.bmp, tmp.width, tmp.height * 2);
+		if (e->value.bmp.scan0) {
+			Mem_Set(e->value.bmp.scan0, 0, (cc_uint32)tmp.width * tmp.height * 2 * BITMAPCOLOR_SIZE);
+			Bitmap_UNSAFE_CopyBlock(0, 0, 0, 0, &tmp, &e->value.bmp, tmp.width);
+		}
+		Mem_Free(tmp.scan0);
+		return 0;
 	}
 	return ZipEntry_ExtractData(e, data, source);
 }
@@ -939,7 +950,7 @@ static void PatchTerrainTile(struct Bitmap* src, int srcX, int srcY, int tileX, 
 
 
 /* the x,y of tiles in terrain.png which get patched */
-static const struct TilePatch { const char* name; cc_uint8 x1,y1, x2,y2; } modern_tiles[12] = {
+static const struct TilePatch { const char* name; cc_uint8 x1,y1, x2,y2; } modern_tiles[] = {
 	{ "assets/minecraft/textures/blocks/sandstone_bottom.png", 9,3 },
 	{ "assets/minecraft/textures/blocks/sandstone_normal.png", 9,2 },
 	{ "assets/minecraft/textures/blocks/sandstone_top.png", 9,1, },
@@ -951,7 +962,36 @@ static const struct TilePatch { const char* name; cc_uint8 x1,y1, x2,y2; } moder
 	{ "assets/minecraft/textures/blocks/wool_colored_brown.png", 2,5 },
 	{ "assets/minecraft/textures/blocks/wool_colored_cyan.png",  4,5 },
 	{ "assets/minecraft/textures/blocks/wool_colored_green.png", 1,5 },
-	{ "assets/minecraft/textures/blocks/wool_colored_pink.png",  0,5 }
+	{ "assets/minecraft/textures/blocks/wool_colored_pink.png",  0,5 },
+	/* Survival Test: row 16-17 of the (now doubled-height) atlas, blank in the original game */
+	{ "assets/minecraft/textures/blocks/crafting_table_top.png",  0,16 },
+	{ "assets/minecraft/textures/blocks/crafting_table_side.png", 1,16 },
+	{ "assets/minecraft/textures/blocks/furnace_top.png",         2,16 },
+	{ "assets/minecraft/textures/blocks/furnace_side.png",        3,16 },
+	{ "assets/minecraft/textures/blocks/furnace_front_off.png",   4,16 },
+	{ "assets/minecraft/textures/blocks/furnace_front_on.png",    5,16 },
+	{ "assets/minecraft/textures/blocks/torch_on.png",            6,16 },
+	{ "assets/minecraft/textures/blocks/door_wood_lower.png",     7,16 },
+	{ "assets/minecraft/textures/items/minecart_chest.png",       8,16 },
+	{ "assets/minecraft/textures/items/stick.png",                9,16 },
+	{ "assets/minecraft/textures/items/iron_ingot.png",          10,16 },
+	{ "assets/minecraft/textures/items/gold_ingot.png",          11,16 },
+	{ "assets/minecraft/textures/items/wood_pickaxe.png",   0,17 },
+	{ "assets/minecraft/textures/items/wood_axe.png",       1,17 },
+	{ "assets/minecraft/textures/items/wood_shovel.png",    2,17 },
+	{ "assets/minecraft/textures/items/wood_sword.png",     3,17 },
+	{ "assets/minecraft/textures/items/stone_pickaxe.png",  4,17 },
+	{ "assets/minecraft/textures/items/stone_axe.png",      5,17 },
+	{ "assets/minecraft/textures/items/stone_shovel.png",   6,17 },
+	{ "assets/minecraft/textures/items/stone_sword.png",    7,17 },
+	{ "assets/minecraft/textures/items/iron_pickaxe.png",   8,17 },
+	{ "assets/minecraft/textures/items/iron_axe.png",       9,17 },
+	{ "assets/minecraft/textures/items/iron_shovel.png",   10,17 },
+	{ "assets/minecraft/textures/items/iron_sword.png",    11,17 },
+	{ "assets/minecraft/textures/items/gold_pickaxe.png",  12,17 },
+	{ "assets/minecraft/textures/items/gold_axe.png",      13,17 },
+	{ "assets/minecraft/textures/items/gold_shovel.png",   14,17 },
+	{ "assets/minecraft/textures/items/gold_sword.png",    15,17 },
 };
 
 CC_NOINLINE static const struct TilePatch* ModernPatcher_GetTile(const cc_string* path) {
