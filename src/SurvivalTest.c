@@ -95,48 +95,103 @@ static cc_bool SurvivalTest_HeldTool(int* kind, int* tier);
 /* Crafting system: recipes defined for 2x2 personal + 3x3 workbench. */
 /*  Recipes are checked by pattern matching (rotation-invariant for 2x2). */
 
-/* Helper: check if a 2x2 grid matches a recipe pattern (ignores empty slots) */
-static cc_bool SurvivalTest_Match2x2(struct SurvivalSlot grid[4],
-                                      BlockID a, BlockID b, BlockID c, BlockID d) {
-	if (grid[0].block == a && grid[1].block == b && grid[2].block == c && grid[3].block == d) return true;
-	/* 90° rotation: [0,1,2,3] -> [2,0,3,1] */
-	if (grid[2].block == a && grid[0].block == b && grid[3].block == c && grid[1].block == d) return true;
-	/* 180° rotation: [0,1,2,3] -> [3,2,1,0] */
-	if (grid[3].block == a && grid[2].block == b && grid[1].block == c && grid[0].block == d) return true;
-	/* 270° rotation: [0,1,2,3] -> [1,3,0,2] */
-	if (grid[1].block == a && grid[3].block == b && grid[0].block == c && grid[2].block == d) return true;
-	return false;
+/* Try to craft from inventory by finding matching recipes. For now, simple iteration. */
+/* In a real implementation, recipes would be loaded from data files. */
+
+/* Structure for a shaped recipe (allows rotation for 2x2) */
+struct CraftRecipe {
+	BlockID input[9];   /* 3x3 grid for matching, or 2x2 if last 5 are AIR */
+	BlockID output;
+	int outputCount;
+};
+
+/* Generate tool recipes at startup */
+static void SurvivalTest_InitRecipes(void) {
+	/* Recipes would go here - for now, crafting is implicit via helper functions */
 }
 
-/* Try to craft from a 2x2 grid. Returns output block and count, or BLOCK_AIR if no match. */
-static BlockID SurvivalTest_TryCraft2x2(struct SurvivalSlot grid[4], int* outCount) {
-	/* Sticks: Planks stacked = Sticks (2x2 of 1 plank each -> 4 sticks) */
-	if (SurvivalTest_Match2x2(grid, BLOCK_WOOD, BLOCK_WOOD, BLOCK_WOOD, BLOCK_WOOD)) {
-		*outCount = 4;
-		return SURVIVAL_ITEM_STICK;
+/* Sticks from planks: 2x2 empty, or via crafting */
+static BlockID SurvivalTest_TryCraft2x2Simple(BlockID a, BlockID b, BlockID c, BlockID d, int* outCount) {
+	/* All are the same plank-like = sticks */
+	if ((a == BLOCK_WOOD || a == BLOCK_AIR) && (b == BLOCK_WOOD || b == BLOCK_AIR) &&
+	    (c == BLOCK_WOOD || c == BLOCK_AIR) && (d == BLOCK_WOOD || d == BLOCK_AIR)) {
+		int planks = (a == BLOCK_WOOD) + (b == BLOCK_WOOD) + (c == BLOCK_WOOD) + (d == BLOCK_WOOD);
+		if (planks == 4) { *outCount = 4; return SURVIVAL_ITEM_STICK; }
+		if (planks >= 2) { *outCount = 2; return SURVIVAL_ITEM_STICK; }
 	}
-	/* Workbench: 2x2 Planks -> Workbench */
-	if (SurvivalTest_Match2x2(grid, BLOCK_WOOD, BLOCK_WOOD, BLOCK_WOOD, BLOCK_WOOD)) {
+	/* Workbench: 4 planks -> 1 workbench */
+	if (a == BLOCK_WOOD && b == BLOCK_WOOD && c == BLOCK_WOOD && d == BLOCK_WOOD) {
 		*outCount = 1;
 		return SURVIVAL_BLOCK_WORKBENCH;
 	}
-	/* Sandstone: 2x2 Sand -> Sandstone */
-	if (SurvivalTest_Match2x2(grid, BLOCK_SAND, BLOCK_SAND, BLOCK_SAND, BLOCK_SAND)) {
-		*outCount = 1;
-		return BLOCK_GOLD;  /* Using gold block as placeholder for sandstone */
-	}
-	/* Torch: Coal + Stick (coal on top, stick below) -> 4 Torches */
-	if (SurvivalTest_Match2x2(grid, BLOCK_COAL_ORE, BLOCK_AIR, SURVIVAL_ITEM_STICK, BLOCK_AIR)) {
+	/* Torch: coal + stick */
+	if ((a == BLOCK_COAL_ORE && d == SURVIVAL_ITEM_STICK) ||
+	    (c == BLOCK_COAL_ORE && b == SURVIVAL_ITEM_STICK)) {
 		*outCount = 4;
 		return SURVIVAL_BLOCK_TORCH;
 	}
+	*outCount = 0;
+	return BLOCK_AIR;
+}
 
+/* Match 3x3 shaped recipe for tools - rotation/reflection invariant is complex, so we match exact patterns */
+static BlockID SurvivalTest_TryCraft3x3(BlockID grid[9], int* outCount) {
+	int i;
+	/* Workbench (already handled in 2x2) */
+	/* Furnace: 8 cobblestone ring (center empty) */
+	if (grid[0]==BLOCK_COBBLE && grid[1]==BLOCK_COBBLE && grid[2]==BLOCK_COBBLE &&
+	    grid[3]==BLOCK_COBBLE && grid[4]==BLOCK_AIR   && grid[5]==BLOCK_COBBLE &&
+	    grid[6]==BLOCK_COBBLE && grid[7]==BLOCK_COBBLE && grid[8]==BLOCK_COBBLE) {
+		*outCount = 1;
+		return SURVIVAL_BLOCK_FURNACE_OFF;
+	}
+	/* Chest: 8 planks ring (center empty) */
+	if (grid[0]==BLOCK_WOOD && grid[1]==BLOCK_WOOD && grid[2]==BLOCK_WOOD &&
+	    grid[3]==BLOCK_WOOD && grid[4]==BLOCK_AIR   && grid[5]==BLOCK_WOOD &&
+	    grid[6]==BLOCK_WOOD && grid[7]==BLOCK_WOOD && grid[8]==BLOCK_WOOD) {
+		*outCount = 1;
+		return SURVIVAL_BLOCK_CHEST;
+	}
 	*outCount = 0;
 	return BLOCK_AIR;
 }
 
 static struct SurvivalSlot st_craft2x2[4];  /* personal crafting grid */
 static struct SurvivalSlot st_craftResult;  /* crafting output slot */
+
+/* Furnace smelting: maps input ore/fuel to output. Furnaces are placed in world and store state. */
+struct SurvivalFurnace {
+	IVec3 pos;
+	int smeltProgress;  /* 0-199, output when reaches 200 */
+	int burnTime;       /* ticks fuel burns */
+	struct SurvivalSlot input, fuel, output;
+};
+#define FURNACE_MAX 16
+static struct SurvivalFurnace st_furnaces[FURNACE_MAX];
+
+/* Chest storage: placed in world, stores up to 27 items. */
+struct SurvivalChest {
+	IVec3 pos;
+	struct SurvivalSlot items[27];
+	cc_bool open;
+};
+#define CHEST_MAX 8
+static struct SurvivalChest st_chests[CHEST_MAX];
+
+/* Smelting recipes: input -> output */
+static BlockID SurvivalTest_GetSmeltOutput(BlockID input) {
+	switch (input) {
+		case BLOCK_IRON_ORE:  return SURVIVAL_ITEM_INGOT_IRON;
+		case BLOCK_GOLD_ORE:  return SURVIVAL_ITEM_INGOT_GOLD;
+		case BLOCK_SAND:      return BLOCK_GLASS;  /* Sand smelts to glass */
+		default: return BLOCK_AIR;
+	}
+}
+
+/* Check if a block is valid furnace fuel */
+static cc_bool SurvivalTest_IsFuel(BlockID block) {
+	return block == BLOCK_WOOD || block == BLOCK_LOG || block == BLOCK_COAL_ORE;
+}
 /* Bumped on every inventory change so the HUD knows to redraw counts. */
 static int st_invVersion;
 static RNGState st_dropRng;
@@ -3660,6 +3715,16 @@ static void SurvivalTest_ResetState(void) {
 	/*  in the last hotbar slot - this was missing entirely before. */
 	st_inv[8].block = BLOCK_TNT;
 	st_inv[8].count = 10;
+
+	/* Beta 1.7.3 survival: start with crafting materials and wooden tools */
+	st_inv[0].block = SURVIVAL_TOOL_ID(SURVIVAL_TOOL_PICKAXE, SURVIVAL_TIER_WOOD);
+	st_inv[0].count = 1;
+	st_inv[1].block = BLOCK_WOOD;  /* Planks for crafting */
+	st_inv[1].count = 20;
+	st_inv[2].block = SURVIVAL_ITEM_STICK;
+	st_inv[2].count = 10;
+	st_inv[3].block = SURVIVAL_TOOL_ID(SURVIVAL_TOOL_SWORD, SURVIVAL_TIER_WOOD);
+	st_inv[3].count = 1;
 
 	for (i = 0; i < DROP_MAX; i++) {
 		st_drops[i].active = false;
