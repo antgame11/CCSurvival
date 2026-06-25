@@ -84,16 +84,11 @@ static struct HUDScreen {
 	int lastFov;
 	int lastX, lastY, lastZ;
 	struct HotbarWidget hotbar;
-	/* Survival HUD text labels, rasterised on change like line1/line2: */
-	/*  "Score: &eN" top-right and "Arrows: N" beside the heart row. */
-	struct TextWidget score, arrows;
 	int heartCount;     /* number of heart vertices built last frame */
 	int countVertices;  /* number of stack-count vertices built last frame */
 	int bubbleCount;    /* number of air-bubble vertices built last frame */
 	int lastHealth;     /* SurvivalTest_Health value from last rebuild */
 	int lastInvVersion; /* SurvivalTest_InvVersion() from last rebuild */
-	int lastArrows;     /* SurvivalTest_ArrowCount() value from last rebuild */
-	int lastScore;      /* SurvivalTest_Score() value from last rebuild */
 } HUDScreen_Instance CC_BIG_VAR;
 
 /* Each integer can be at most 10 digits + minus prefix */
@@ -110,20 +105,12 @@ static struct HUDScreen {
 /* Absolute vertex offsets of each region within the HUD vertex buffer. The */
 /*  crosshair (4) + line1 (4) + line2 (4) + hotbar are built sequentially up */
 /*  front (4 + TEXTWIDGET_MAX*2 + HOTBAR_MAX_VERTICES vertices); the survival */
-/*  regions after that live at these fixed offsets. The Score and Arrows */
-/*  labels are one textured quad each (TEXTWIDGET_MAX vertices). */
+/*  regions after that live at these fixed offsets. */
 #define HUD_OFS_POSITION (4 + TEXTWIDGET_MAX * 2 + HOTBAR_MAX_VERTICES)
 #define HUD_OFS_HEARTS   (HUD_OFS_POSITION + POSITION_HUD_CHARS * 4)
 #define HUD_OFS_COUNTS   (HUD_OFS_HEARTS   + SURVIVAL_HEARTS_MAX_VERTICES)
 #define HUD_OFS_BUBBLES  (HUD_OFS_COUNTS   + SURVIVAL_COUNTS_MAX_VERTICES)
-#define HUD_OFS_SCORE    (HUD_OFS_BUBBLES  + SURVIVAL_BUBBLES_MAX_VERTICES)
-#define HUD_OFS_ARROWS   (HUD_OFS_SCORE    + TEXTWIDGET_MAX)
-#define HUD_MAX_VERTICES (HUD_OFS_ARROWS   + TEXTWIDGET_MAX)
-
-/* Defined further down (beside the survival mesh builders), forward-declared */
-/*  here since ContextRecreated rebuilds these label textures. */
-static void HUDScreen_RemakeScore(struct HUDScreen* s);
-static void HUDScreen_RemakeArrows(struct HUDScreen* s);
+#define HUD_MAX_VERTICES (HUD_OFS_BUBBLES  + SURVIVAL_BUBBLES_MAX_VERTICES)
 
 static void HUDScreen_RemakeLine1(struct HUDScreen* s) {
 	cc_string status; char statusBuffer[STRING_SIZE * 2];
@@ -238,8 +225,6 @@ static void HUDScreen_ContextLost(void* screen) {
 	Elem_Free(&s->hotbar);
 	Elem_Free(&s->line1);
 	Elem_Free(&s->line2);
-	Elem_Free(&s->score);
-	Elem_Free(&s->arrows);
 }
 
 static void HUDScreen_ContextRecreated(void* screen) {
@@ -266,10 +251,6 @@ static void HUDScreen_ContextRecreated(void* screen) {
 	TextAtlas_Make(&s->countAtlas, &digits, &countFont, &empty);
 	Font_Free(&countFont);
 
-	/* Survival Score / Arrows label textures (rebuilt here since ContextLost */
-	/*  freed them); their text is refreshed on change in HUDScreen_Update. */
-	HUDScreen_RemakeScore(s);
-	HUDScreen_RemakeArrows(s);
 }
 
 int HUDScreen_LayoutHotbar(void) {
@@ -368,8 +349,6 @@ static void HUDScreen_Init(void* screen) {
 	HotbarWidget_Create(&s->hotbar);
 	TextWidget_Init(&s->line1);
 	TextWidget_Init(&s->line2);
-	TextWidget_Init(&s->score);
-	TextWidget_Init(&s->arrows);
 
 	s->line1.flags  |= WIDGET_FLAG_MAINSCREEN;
 	s->line2.flags  |= WIDGET_FLAG_MAINSCREEN;
@@ -428,15 +407,7 @@ static void HUDScreen_Update(void* screen, float delta) {
 		s->dirty          = true;
 	}
 
-	if (SurvivalTest_Enabled && SurvivalTest_ArrowCount() != s->lastArrows) {
-		HUDScreen_RemakeArrows(s); /* updates lastArrows */
-		s->dirty      = true;
-	}
-
-	if (SurvivalTest_Enabled && SurvivalTest_Score() != s->lastScore) {
-		HUDScreen_RemakeScore(s);  /* updates lastScore */
-		s->dirty      = true;
-	}
+	/* Score / Arrows HUD labels are intentionally disabled. */
 
 	/* Air bubbles deplete continuously while the head is underwater, so keep */
 	/*  rebuilding the HUD to animate them (like the low-health heart shake). */
@@ -653,35 +624,11 @@ static int HUDScreen_BuildBubblesMesh(struct HUDScreen* s, struct VertexTextured
 	return (int)(cur - dst);
 }
 
-/* HUDScreen.java's SurvivalGameMode labels, rasterised on change like the FPS */
-/*  line: "Score: &eN" (yellow number) and "Arrows: N". Their on-screen */
-/*  positions are pinned per-frame in HUDScreen_BuildMesh. */
-static void HUDScreen_RemakeScore(struct HUDScreen* s) {
-	cc_string str; char buf[STRING_SIZE];
-	int score = SurvivalTest_Score();
-	String_InitArray(str, buf);
-	String_Format1(&str, "Score: &e%i", &score);
-	TextWidget_Set(&s->score, &str, &s->font);
-	s->lastScore = score;
-}
-
-static void HUDScreen_RemakeArrows(struct HUDScreen* s) {
-	cc_string str; char buf[STRING_SIZE];
-	int arrows = SurvivalTest_ArrowCount();
-	String_InitArray(str, buf);
-	String_Format1(&str, "Arrows: %i", &arrows);
-	TextWidget_Set(&s->arrows, &str, &s->font);
-	s->lastArrows = arrows;
-}
-
 static void HUDScreen_BuildMesh(void* screen) {
 	struct HUDScreen* s = (struct HUDScreen*)screen;
 	struct VertexTextured* base;
 	struct VertexTextured* data;
 	struct VertexTextured** ptr;
-	struct VertexTextured* p;
-	float scale;
-	int heartSize, rowY;
 
 	base = Screen_LockVb(s);
 	data = base;
@@ -699,43 +646,6 @@ static void HUDScreen_BuildMesh(void* screen) {
 	s->countVertices = HUDScreen_BuildCountsMesh (s, base + HUD_OFS_COUNTS);
 	s->bubbleCount   = HUDScreen_BuildBubblesMesh(s, base + HUD_OFS_BUBBLES);
 
-	/* Survival Score / Arrows labels. The text textures are rasterised once (on */
-	/*  change) at a fixed font size, but the hotbar/hearts scale with the GUI */
-	/*  scale, so at a large scale the labels looked tiny next to them. Stretch */
-	/*  each label's quad to the SAME on-screen height the original HUDScreen */
-	/*  draws its 8px font at - (8/22) of the hotbar height, exactly like the */
-	/*  stack-count digits - so they track the hotbar at any scale/DPI. Built as */
-	/*  a scaled copy of the widget's texture rather than mutating the widget */
-	/*  (which persists across frames and would compound the scaling). */
-	if (SurvivalTest_Enabled) {
-		struct Texture lbl;
-		float labelH = s->hotbar.height * (8.0f / 22.0f);
-		scale     = Gui_GetHotbarScale() * DisplayInfo.ScaleY;
-		heartSize = (int)(9.0f * scale);
-		rowY      = s->hotbar.y - heartSize - (int)(2.0f * scale);
-
-		/* Score: top-right corner */
-		lbl = s->score.tex;
-		if (lbl.height) {
-			lbl.width  = (cc_uint16)(lbl.width * labelH / lbl.height);
-			lbl.height = (cc_uint16)labelH;
-		}
-		lbl.x = Window_Main.Width - lbl.width - (int)(2.0f * scale);
-		lbl.y = (int)(2.0f * scale);
-		p = base + HUD_OFS_SCORE;
-		Gfx_Make2DQuad(&lbl, s->score.color, &p);
-
-		/* Arrows: beside the heart row, vertically centred on it */
-		lbl = s->arrows.tex;
-		if (lbl.height) {
-			lbl.width  = (cc_uint16)(lbl.width * labelH / lbl.height);
-			lbl.height = (cc_uint16)labelH;
-		}
-		lbl.x = s->hotbar.x + s->hotbar.width / 2 + (int)(8.0f * scale);
-		lbl.y = rowY + (heartSize - (int)labelH) / 2;
-		p = base + HUD_OFS_ARROWS;
-		Gfx_Make2DQuad(&lbl, s->arrows.color, &p);
-	}
 	Gfx_UnlockDynamicVb(s->vb);
 }
 
@@ -789,15 +699,6 @@ static void HUDScreen_Render(void* screen, float delta) {
 			Gfx_DrawVb_IndexedTris_Range(s->bubbleCount, HUD_OFS_BUBBLES, DRAW_HINT_SPRITE);
 		}
 
-		/* Draw survival Score / Arrows labels (each binds its own text texture) */
-		if (SurvivalTest_Enabled && s->score.tex.ID) {
-			Gfx_BindDynamicVb(s->vb);
-			Widget_Render2(&s->score, HUD_OFS_SCORE);
-		}
-		if (SurvivalTest_Enabled && s->arrows.tex.ID) {
-			Gfx_BindDynamicVb(s->vb);
-			Widget_Render2(&s->arrows, HUD_OFS_ARROWS);
-		}
 	}
 
 	Gfx_3DS_SetRenderScreen(BOTTOM_SCREEN);
@@ -2822,10 +2723,21 @@ static int SurvivalInvScreen_PointerDown(void* screen, int id, int x, int y) {
 			BlockID cblock = SurvivalTest_CraftSlotBlock(hitCraft);
 			int ccount = SurvivalTest_CraftSlotCount(hitCraft);
 
-			/* Swap storage slot with craft slot */
-			SurvivalTest_SetCraftSlot(hitCraft, sblock, scount);
-			SurvivalTest_SetInvSlot(s->heldSlot, cblock, ccount);
-			s->heldSlot = -1;
+			if (cblock == BLOCK_AIR || cblock == sblock) {
+				/* Place exactly 1 unit into the craft slot, keep holding the rest */
+				SurvivalTest_SetCraftSlot(hitCraft, sblock, ccount + 1);
+				if (scount - 1 <= 0) {
+					SurvivalTest_SetInvSlot(s->heldSlot, BLOCK_AIR, 0);
+					s->heldSlot = -1;
+				} else {
+					SurvivalTest_SetInvSlot(s->heldSlot, sblock, scount - 1);
+				}
+			} else {
+				/* Different item type already in slot: swap the two stacks instead */
+				SurvivalTest_SetCraftSlot(hitCraft, sblock, scount);
+				SurvivalTest_SetInvSlot(s->heldSlot, cblock, ccount);
+				s->heldSlot = -1;
+			}
 			s->dirty = true;
 			/* After placing items, try to auto-execute any matching recipe */
 			SurvivalTest_TryCraft();
@@ -2923,10 +2835,6 @@ void SurvivalInvScreen_Show(void) {
 	struct SurvivalInvScreen* s = &SurvivalInvScreen_Instance;
 	/* Non-survival modes use the normal creative block-grid inventory. */
 	if (!SurvivalTest_Enabled) { InventoryScreen_Show(); return; }
-	/* Faithful Classic 0.30-s had no inventory screen whatsoever - just the */
-	/*  fixed hotbar - so opening the inventory does nothing at all. The paperdoll */
-	/*  storage screen below is an Enhanced-only extra, not authentic to c0.30-s. */
-	if (!SurvivalTest_Enhanced) return;
 	s->grabsInput = true;
 	s->closable   = true;
 	s->VTABLE     = &SurvivalInvScreen_VTABLE;

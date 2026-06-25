@@ -34,7 +34,6 @@
 */
 
 cc_bool SurvivalTest_Enabled;
-cc_bool SurvivalTest_Enhanced;
 int     SurvivalTest_Health = SURVIVAL_MAX_HEALTH;
 
 /* How long (seconds) the player is invincible after taking damage */
@@ -3807,20 +3806,6 @@ static void SurvivalTest_ResetState(void) {
 		st_inv[i].block = BLOCK_AIR;
 		st_inv[i].count = 0;
 	}
-	/* SurvivalGameMode.apply(Player): the player always starts with 10 TNT */
-	/*  in the last hotbar slot - this was missing entirely before. */
-	st_inv[8].block = BLOCK_TNT;
-	st_inv[8].count = 10;
-
-	/* Beta 1.7.3 survival: start with crafting materials and wooden tools */
-	st_inv[0].block = SURVIVAL_TOOL_ID(SURVIVAL_TOOL_PICKAXE, SURVIVAL_TIER_WOOD);
-	st_inv[0].count = 1;
-	st_inv[1].block = BLOCK_WOOD;  /* Planks for crafting */
-	st_inv[1].count = 20;
-	st_inv[2].block = SURVIVAL_ITEM_STICK;
-	st_inv[2].count = 10;
-	st_inv[3].block = SURVIVAL_TOOL_ID(SURVIVAL_TOOL_SWORD, SURVIVAL_TIER_WOOD);
-	st_inv[3].count = 1;
 
 	for (i = 0; i < DROP_MAX; i++) {
 		st_drops[i].active = false;
@@ -3831,7 +3816,7 @@ static void SurvivalTest_ResetState(void) {
 	for (i = 0; i < ARROW_MAX; i++) {
 		st_arrows[i].active = false;
 	}
-	st_playerArrows = ARROW_PLAYER_START;
+	st_playerArrows = 0;
 
 	for (i = 0; i < TNT_MAX; i++) {
 		st_tnt[i].active = false;
@@ -3954,10 +3939,6 @@ static void SurvivalTest_RegisterCustomBlocks(void) {
 }
 
 static void SurvivalTest_Init(void) {
-	/* Loaded unconditionally so the inventory screen can read it even before */
-	/*  any survival logic runs (it gates a UI choice, not a gameplay rule). */
-	SurvivalTest_Enhanced = Options_GetBool(OPT_SURVIVAL_ENHANCED, false);
-
 	SurvivalTest_Enabled = Options_GetBool(OPT_SURVIVAL_MODE, false);
 	if (!SurvivalTest_Enabled) return;
 
