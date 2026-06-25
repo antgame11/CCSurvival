@@ -2565,11 +2565,15 @@ static void SurvivalInvScreen_BuildMesh(void* screen) {
 	data     = Screen_LockVb(s);
 	halfSize = s->slotSize * 0.5f;
 
-	/* ISO block pictures for all occupied inventory slots (storage + hotbar) */
+	/* ISO block pictures for all occupied inventory slots (storage + hotbar). */
+	/* The picked-up slot's icon is drawn following the cursor instead of in   */
+	/*  its origin slot, matching Minecraft's drag-and-drop "item on cursor"   */
+	/*  look, so it's visually obvious that something was actually picked up. */
 	IsometricDrawer_BeginBatch(data, s->isoState);
 	for (i = 0; i < SURVIVAL_INV_SLOTS; i++) {
 		block = SurvivalTest_SlotBlock(i);
 		if (block == BLOCK_AIR) continue;
+		if (i == s->heldSlot) continue;
 		SurvivalInv_SlotXY(s, i, &slotX, &slotY);
 		IsometricDrawer_AddBatch(block, halfSize,
 			slotX + s->slotSize / 2, slotY + s->slotSize / 2);
@@ -2578,9 +2582,18 @@ static void SurvivalInvScreen_BuildMesh(void* screen) {
 	for (i = 0; i <= 4; i++) {
 		block = SurvivalTest_CraftSlotBlock(i);
 		if (block == BLOCK_AIR) continue;
+		if (i == s->heldCraftSlot) continue;
 		SurvivalInv_CraftSlotXY(s, i, &slotX, &slotY);
 		IsometricDrawer_AddBatch(block, halfSize,
 			slotX + s->slotSize / 2, slotY + s->slotSize / 2);
+	}
+	/* Held item (from either storage or crafting) follows the cursor */
+	if (s->heldSlot >= 0 && s->mouseX >= 0) {
+		block = SurvivalTest_SlotBlock(s->heldSlot);
+		if (block != BLOCK_AIR) IsometricDrawer_AddBatch(block, halfSize, s->mouseX, s->mouseY);
+	} else if (s->heldCraftSlot >= 0 && s->mouseX >= 0) {
+		block = SurvivalTest_CraftSlotBlock(s->heldCraftSlot);
+		if (block != BLOCK_AIR) IsometricDrawer_AddBatch(block, halfSize, s->mouseX, s->mouseY);
 	}
 	s->isoVertCount = IsometricDrawer_EndBatch();
 
@@ -2824,9 +2837,11 @@ static int SurvivalInvScreen_PointerDown(void* screen, int id, int x, int y) {
 			/* Nothing held: pick up the slot if it has something */
 			if (SurvivalTest_CraftSlotBlock(hitCraft) != BLOCK_AIR)
 				s->heldCraftSlot = hitCraft;
+			s->dirty = true;
 		} else if (s->heldCraftSlot == hitCraft) {
 			/* Clicked the same slot again: deselect */
 			s->heldCraftSlot = -1;
+			s->dirty = true;
 		} else {
 			/* Different slot: swap the two crafting slots */
 			BlockID a_block = SurvivalTest_CraftSlotBlock(s->heldCraftSlot);
@@ -2864,9 +2879,11 @@ static int SurvivalInvScreen_PointerDown(void* screen, int id, int x, int y) {
 			/* Nothing held: pick up the slot if it has something */
 			if (SurvivalTest_SlotBlock(hitStorage) != BLOCK_AIR)
 				s->heldSlot = hitStorage;
+			s->dirty = true;
 		} else if (s->heldSlot == hitStorage) {
 			/* Clicked the same slot again: deselect */
 			s->heldSlot = -1;
+			s->dirty = true;
 		} else {
 			/* Different slot: swap the two stacks */
 			SurvivalTest_SwapSlots(s->heldSlot, hitStorage);
@@ -2888,6 +2905,8 @@ static int SurvivalInvScreen_PointerMove(void* screen, int id, int x, int y) {
 	struct SurvivalInvScreen* s = (struct SurvivalInvScreen*)screen;
 	s->mouseX = x;
 	s->mouseY = y;
+	/* Keep the held item's icon tracking the cursor every frame while dragging. */
+	if (s->heldSlot >= 0 || s->heldCraftSlot >= 0) s->dirty = true;
 	return false;
 }
 
