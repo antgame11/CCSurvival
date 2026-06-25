@@ -432,6 +432,15 @@ static void InputHandler_PlaceBlock(void) {
 	/*  block - works even when not aiming at a placeable surface */
 	if (SurvivalTest_TryEat()) return;
 
+	/* In survival, right-clicking a workbench opens the crafting screen */
+	/*  instead of placing a block */
+	if (Game_SelectedPos.valid && World_Contains(Game_SelectedPos.pos.x, Game_SelectedPos.pos.y, Game_SelectedPos.pos.z) &&
+		World_GetBlock(Game_SelectedPos.pos.x, Game_SelectedPos.pos.y, Game_SelectedPos.pos.z) == SURVIVAL_BLOCK_WORKBENCH &&
+		SurvivalTest_Enabled) {
+		SurvivalInvScreen_Show();
+		return;
+	}
+
 	pos = Game_SelectedPos.translatedPos;
 	if (!Game_SelectedPos.valid || !World_Contains(pos.x, pos.y, pos.z)) return;
 
