@@ -24,6 +24,8 @@
 #include "Options.h"
 #include "InputHandler.h"
 #include "Protocol.h"
+#include "SurvivalTest.h"
+#include "IsometricDrawer.h"
 
 #define CHAT_MAX_STATUS Array_Elems(Chat_Status)
 #define CHAT_MAX_BOTTOMRIGHT Array_Elems(Chat_BottomRight)
@@ -72,6 +74,9 @@ static struct HUDScreen {
 	struct FontDesc font;
 	struct TextWidget line1, line2;
 	struct TextAtlas posAtlas;
+	/* Separate, unpadded digit atlas for hotbar stack counts, so the glyph */
+	/*  metrics are exact (the padded posAtlas threw off corner alignment). */
+	struct TextAtlas countAtlas;
 	float accumulator;
 	int frames, posCount;
 	cc_bool hacksChanged;
@@ -79,13 +84,46 @@ static struct HUDScreen {
 	int lastFov;
 	int lastX, lastY, lastZ;
 	struct HotbarWidget hotbar;
+	/* Survival HUD text labels, rasterised on change like line1/line2: */
+	/*  "Score: &eN" top-right and "Arrows: N" beside the heart row. */
+	struct TextWidget score, arrows;
+	int heartCount;     /* number of heart vertices built last frame */
+	int countVertices;  /* number of stack-count vertices built last frame */
+	int bubbleCount;    /* number of air-bubble vertices built last frame */
+	int lastHealth;     /* SurvivalTest_Health value from last rebuild */
+	int lastInvVersion; /* SurvivalTest_InvVersion() from last rebuild */
+	int lastArrows;     /* SurvivalTest_ArrowCount() value from last rebuild */
+	int lastScore;      /* SurvivalTest_Score() value from last rebuild */
 } HUDScreen_Instance CC_BIG_VAR;
 
 /* Each integer can be at most 10 digits + minus prefix */
 #define POSITION_VAL_CHARS 11
 /* [PREFIX] [(] [X] [,] [Y] [,] [Z] [)] */
 #define POSITION_HUD_CHARS (1 + 1 + POSITION_VAL_CHARS + 1 + POSITION_VAL_CHARS + 1 + POSITION_VAL_CHARS + 1)
-#define HUD_MAX_VERTICES (4 + TEXTWIDGET_MAX * 2 + HOTBAR_MAX_VERTICES + POSITION_HUD_CHARS * 4)
+/* 10 heart backgrounds + up to 10 filled hearts = 20 quads = 80 vertices */
+#define SURVIVAL_HEARTS_MAX_VERTICES 80
+/* Up to 2 digits per hotbar slot for stack counts (4 vertices per digit) */
+#define SURVIVAL_COUNTS_MAX_VERTICES (SURVIVAL_HOTBAR_SLOTS * 2 * 4)
+/* Air bubble row when the head is underwater: up to 10 bubbles (4 verts each) */
+#define SURVIVAL_BUBBLES_MAX_VERTICES (10 * 4)
+
+/* Absolute vertex offsets of each region within the HUD vertex buffer. The */
+/*  crosshair (4) + line1 (4) + line2 (4) + hotbar are built sequentially up */
+/*  front (4 + TEXTWIDGET_MAX*2 + HOTBAR_MAX_VERTICES vertices); the survival */
+/*  regions after that live at these fixed offsets. The Score and Arrows */
+/*  labels are one textured quad each (TEXTWIDGET_MAX vertices). */
+#define HUD_OFS_POSITION (4 + TEXTWIDGET_MAX * 2 + HOTBAR_MAX_VERTICES)
+#define HUD_OFS_HEARTS   (HUD_OFS_POSITION + POSITION_HUD_CHARS * 4)
+#define HUD_OFS_COUNTS   (HUD_OFS_HEARTS   + SURVIVAL_HEARTS_MAX_VERTICES)
+#define HUD_OFS_BUBBLES  (HUD_OFS_COUNTS   + SURVIVAL_COUNTS_MAX_VERTICES)
+#define HUD_OFS_SCORE    (HUD_OFS_BUBBLES  + SURVIVAL_BUBBLES_MAX_VERTICES)
+#define HUD_OFS_ARROWS   (HUD_OFS_SCORE    + TEXTWIDGET_MAX)
+#define HUD_MAX_VERTICES (HUD_OFS_ARROWS   + TEXTWIDGET_MAX)
+
+/* Defined further down (beside the survival mesh builders), forward-declared */
+/*  here since ContextRecreated rebuilds these label textures. */
+static void HUDScreen_RemakeScore(struct HUDScreen* s);
+static void HUDScreen_RemakeArrows(struct HUDScreen* s);
 
 static void HUDScreen_RemakeLine1(struct HUDScreen* s) {
 	cc_string status; char statusBuffer[STRING_SIZE * 2];
@@ -196,16 +234,22 @@ static void HUDScreen_ContextLost(void* screen) {
 	Screen_ContextLost(screen);
 
 	TextAtlas_Free(&s->posAtlas);
+	TextAtlas_Free(&s->countAtlas);
 	Elem_Free(&s->hotbar);
 	Elem_Free(&s->line1);
 	Elem_Free(&s->line2);
+	Elem_Free(&s->score);
+	Elem_Free(&s->arrows);
 }
 
-static void HUDScreen_ContextRecreated(void* screen) {	
+static void HUDScreen_ContextRecreated(void* screen) {
 	static const cc_string chars  = String_FromConst("0123456789-, ()");
 	static const cc_string prefix = String_FromConst("Position: ");
+	static const cc_string digits = String_FromConst("0123456789");
+	static const cc_string empty  = String_FromConst("");
 
 	struct HUDScreen* s = (struct HUDScreen*)screen;
+	struct FontDesc countFont;
 	Screen_UpdateVb(s);
 
 	Font_Make(&s->font, 16, FONT_FLAGS_PADDING);
@@ -215,6 +259,17 @@ static void HUDScreen_ContextRecreated(void* screen) {
 	HUDScreen_RemakeLine1(s);
 	TextAtlas_Make(&s->posAtlas, &chars, &s->font, &prefix);
 	HUDScreen_RemakeLine2(s);
+
+	/* Unpadded digit atlas for stack counts (exact glyph metrics). The font */
+	/*  is only needed to rasterise the atlas, so it can be freed right after. */
+	Font_Make(&countFont, 16, FONT_FLAGS_NONE);
+	TextAtlas_Make(&s->countAtlas, &digits, &countFont, &empty);
+	Font_Free(&countFont);
+
+	/* Survival Score / Arrows label textures (rebuilt here since ContextLost */
+	/*  freed them); their text is refreshed on change in HUDScreen_Update. */
+	HUDScreen_RemakeScore(s);
+	HUDScreen_RemakeArrows(s);
 }
 
 int HUDScreen_LayoutHotbar(void) {
@@ -222,6 +277,11 @@ int HUDScreen_LayoutHotbar(void) {
 	s->hotbar.scale     = Gui_GetHotbarScale();
 	Widget_Layout(&s->hotbar);
 	return s->hotbar.height;
+}
+
+void HUDScreen_SetSlotPop(int slot, float time) {
+	if (!Gui_HUD || slot < 0 || slot >= INVENTORY_BLOCKS_PER_HOTBAR) return;
+	Gui_HUD->hotbar.slotPopTime[slot] = time;
 }
 
 static void HUDScreen_Layout(void* screen) {
@@ -308,7 +368,9 @@ static void HUDScreen_Init(void* screen) {
 	HotbarWidget_Create(&s->hotbar);
 	TextWidget_Init(&s->line1);
 	TextWidget_Init(&s->line2);
-	
+	TextWidget_Init(&s->score);
+	TextWidget_Init(&s->arrows);
+
 	s->line1.flags  |= WIDGET_FLAG_MAINSCREEN;
 	s->line2.flags  |= WIDGET_FLAG_MAINSCREEN;
 
@@ -350,6 +412,46 @@ static void HUDScreen_Update(void* screen, float delta) {
 	if (pos.x != s->lastX || pos.y != s->lastY || pos.z != s->lastZ) {
 		s->dirty = true;
 	}
+
+	if (SurvivalTest_Enabled && SurvivalTest_Health != s->lastHealth) {
+		s->lastHealth = SurvivalTest_Health;
+		s->dirty      = true;
+	}
+	/* Survival Test: the heart bar jitters while at 2 hearts (4 HP) or less, */
+	/*  so keep rebuilding the HUD each frame to animate the shake */
+	if (SurvivalTest_Enabled && SurvivalTest_Health > 0 && SurvivalTest_Health <= 4) {
+		s->dirty = true;
+	}
+
+	if (SurvivalTest_Enabled && SurvivalTest_InvVersion() != s->lastInvVersion) {
+		s->lastInvVersion = SurvivalTest_InvVersion();
+		s->dirty          = true;
+	}
+
+	if (SurvivalTest_Enabled && SurvivalTest_ArrowCount() != s->lastArrows) {
+		HUDScreen_RemakeArrows(s); /* updates lastArrows */
+		s->dirty      = true;
+	}
+
+	if (SurvivalTest_Enabled && SurvivalTest_Score() != s->lastScore) {
+		HUDScreen_RemakeScore(s);  /* updates lastScore */
+		s->dirty      = true;
+	}
+
+	/* Air bubbles deplete continuously while the head is underwater, so keep */
+	/*  rebuilding the HUD to animate them (like the low-health heart shake). */
+	if (SurvivalTest_Enabled && SurvivalTest_HeadUnderwater()) {
+		s->dirty = true;
+	}
+
+	/* Rebuild each frame while any slot pop animation is running so the */
+	/*  animated slot (which HotbarWidget_Update just decremented) is redrawn */
+	if (SurvivalTest_Enabled) {
+		int i;
+		for (i = 0; i < INVENTORY_BLOCKS_PER_HOTBAR; i++) {
+			if (s->hotbar.slotPopTime[i] > 0.0f) { s->dirty = true; break; }
+		}
+	}
 }
 
 #define CH_EXTENT 16
@@ -367,12 +469,222 @@ static void HUDScreen_BuildCrosshairsMesh(struct VertexTextured** ptr) {
 	Gfx_Make2DQuad(&tex, PACKEDCOL_WHITE, ptr);
 }
 
+/* UV coordinates for hearts in icons.png (256 wide, top 64 pixels used) */
+/* Empty heart background: 9x9 at pixel (16,0) */
+#define HEART_BG_U1  (16/256.0f)
+#define HEART_BG_U2  (25/256.0f)
+/* Full heart: 9x9 at pixel (52,0) */
+#define HEART_FULL_U1  (52/256.0f)
+#define HEART_FULL_U2  (61/256.0f)
+/* Half heart: 9x9 at pixel (61,0) */
+#define HEART_HALF_U1  (61/256.0f)
+#define HEART_HALF_U2  (70/256.0f)
+#define HEART_V1  (0/64.0f)
+#define HEART_V2  (9/64.0f)
+
+static int HUDScreen_BuildHeartsMesh(struct HUDScreen* s, struct VertexTextured* dst) {
+	struct Texture tex;
+	struct VertexTextured* cur = dst;
+	int fullHearts, i, x, y, heartSize;
+	cc_bool hasHalf;
+	float scale;
+
+	if (!SurvivalTest_Enabled) return 0;
+
+	/* Match the hotbar's TRUE on-screen scale (Gui_GetHotbarScale bakes out */
+	/*  DPI, then HotbarWidget_Reposition multiplies it back in via */
+	/*  DisplayInfo.ScaleY). Using the bare hotbar scale here left the hearts */
+	/*  smaller than the hotbar on HiDPI/fullscreen; folding ScaleY back in */
+	/*  keeps the whole survival HUD scaling as one unit. No-op when ScaleY==1. */
+	scale     = Gui_GetHotbarScale() * DisplayInfo.ScaleY;
+	heartSize = (int)(9.0f * scale);
+
+	/* Survival Test draws the heart row flush with the hotbar's left edge */
+	/*  (not centred), so the bar grows rightwards from the first slot. */
+	x = s->hotbar.x;
+	y = s->hotbar.y - heartSize - (int)(2.0f * scale);
+
+	/* At 2 hearts (4 HP) or less the bar shakes, as it did in Survival Test */
+	if (SurvivalTest_Health > 0 && SurvivalTest_Health <= 4) {
+		static RNGState shakeRng;
+		static cc_bool  shakeInit;
+		if (!shakeInit) { Random_SeedFromCurrentTime(&shakeRng); shakeInit = true; }
+		y += Random_Next(&shakeRng, 2);
+	}
+
+	tex.ID = Gui.IconsTex;
+
+	/* Draw 10 empty heart backgrounds */
+	Tex_SetUV(tex, HEART_BG_U1, HEART_V1, HEART_BG_U2, HEART_V2);
+	for (i = 0; i < 10; i++) {
+		Tex_SetRect(tex, x + i * heartSize, y, heartSize, heartSize);
+		Gfx_Make2DQuad(&tex, PACKEDCOL_WHITE, &cur);
+	}
+
+	/* Draw filled hearts according to current health (2 HP per heart) */
+	fullHearts = SurvivalTest_Health / 2;
+	hasHalf    = (SurvivalTest_Health & 1) != 0;
+
+	Tex_SetUV(tex, HEART_FULL_U1, HEART_V1, HEART_FULL_U2, HEART_V2);
+	for (i = 0; i < fullHearts; i++) {
+		Tex_SetRect(tex, x + i * heartSize, y, heartSize, heartSize);
+		Gfx_Make2DQuad(&tex, PACKEDCOL_WHITE, &cur);
+	}
+
+	if (hasHalf) {
+		Tex_SetUV(tex, HEART_HALF_U1, HEART_V1, HEART_HALF_U2, HEART_V2);
+		Tex_SetRect(tex, x + fullHearts * heartSize, y, heartSize, heartSize);
+		Gfx_Make2DQuad(&tex, PACKEDCOL_WHITE, &cur);
+	}
+
+	return (int)(cur - dst);
+}
+
+/* Builds the stack-count digits drawn over each hotbar slot. Survival Test */
+/*  (HUDScreen.java) draws these with the 8px-tall GUI font in its 240-unit- */
+/*  tall virtual screen space, where the hotbar is 22 units tall and each slot */
+/*  cell is 20 units wide. Our HotbarWidget bakes that exact scale into its */
+/*  pixel geometry (w->height = 22 * hotbarScale * ScaleY, slotWidth = 20 * */
+/*  hotbarScale * ScaleX), so a faithful digit is (8/22) of the hotbar height, */
+/*  right-aligned to each slot cell's right edge. Counts of 1 are left implicit. */
+static int HUDScreen_BuildCountsMesh(struct HUDScreen* s, struct VertexTextured* dst) {
+	struct TextAtlas* atlas = &s->countAtlas;
+	struct HotbarWidget* w  = &s->hotbar;
+	struct VertexTextured* cur = dst;
+	struct Texture part;
+	char digits[STRING_INT_CHARS];
+	int i, j, count, nDigits, d;
+	float f, digitH, totalW, penX, slotRight, top, bottom;
+
+	if (!SurvivalTest_Enabled) return 0;
+	if (!atlas->tex.ID)        return 0; /* digit atlas not created yet */
+	if (!atlas->tex.height)    return 0;
+
+	/* 8px-tall font glyphs in the original's 22-unit-tall hotbar space. */
+	digitH = w->height * (8.0f / 22.0f);
+	f      = digitH / atlas->tex.height;
+
+	/* Original font top y = slotY + 6, with slotY = screenBottom - 16, i.e. */
+	/*  10 virtual units above the hotbar's bottom edge (so the digit's bottom */
+	/*  sits 2 units above it). */
+	bottom = (float)(w->y + w->height);
+	top    = bottom - w->height * (10.0f / 22.0f);
+
+	part.ID     = atlas->tex.ID;
+	part.uv.v1  = atlas->tex.uv.v1;
+	part.uv.v2  = atlas->tex.uv.v2;
+	part.height = (cc_uint16)digitH;
+	part.y      = (short)top;
+
+	for (i = 0; i < SURVIVAL_HOTBAR_SLOTS; i++) {
+		count = SurvivalTest_HotbarCount(i);
+		if (count <= 1) continue;
+
+		nDigits = String_MakeUInt32((cc_uint32)count, digits);
+		totalW  = 0.0f;
+		for (j = 0; j < nDigits; j++) totalW += atlas->widths[digits[j] - '0'] * f;
+
+		/* Right-align to slot i's cell right edge: slotWidth*(i+1) from the */
+		/*  hotbar's left edge, matching var26 + 19 in HUDScreen.java (no inset). */
+		slotRight = w->x + w->slotWidth * (i + 1);
+		penX      = slotRight - totalW;
+
+		/* String_MakeUInt32 writes least-significant first, so emit reversed */
+		for (j = nDigits - 1; j >= 0; j--) {
+			d           = digits[j] - '0';
+			part.x      = (short)penX;
+			part.width  = (cc_uint16)(atlas->widths[d] * f);
+			part.uv.u1  = atlas->offsets[d] * atlas->uScale;
+			part.uv.u2  = part.uv.u1 + atlas->widths[d] * atlas->uScale;
+			Gfx_Make2DQuad(&part, PACKEDCOL_WHITE, &cur);
+			penX += part.width;
+		}
+	}
+	return (int)(cur - dst);
+}
+
+/* UV coordinates for the air bubbles in icons.png (HUDScreen.java): a full */
+/*  bubble at pixel (16,18) and a bursting one at (25,18), both 9x9. */
+#define BUBBLE_FULL_U1 (16/256.0f)
+#define BUBBLE_FULL_U2 (25/256.0f)
+#define BUBBLE_POP_U1  (25/256.0f)
+#define BUBBLE_POP_U2  (34/256.0f)
+#define BUBBLE_V1      (18/64.0f)
+#define BUBBLE_V2      (27/64.0f)
+
+/* Builds the depleting air bubble row shown above the hearts while the head */
+/*  is underwater (HUDScreen.java's isUnderWater() block). The full/bursting */
+/*  split is the original's: full = ceil((air-2)*10/300), and one extra */
+/*  bursting bubble appears as the current one drains, total = ceil(air*10/300). */
+static int HUDScreen_BuildBubblesMesh(struct HUDScreen* s, struct VertexTextured* dst) {
+	struct Texture tex;
+	struct VertexTextured* cur = dst;
+	int air, full, total, i, x, y, size;
+	float scale;
+
+	if (!SurvivalTest_Enabled)         return 0;
+	if (!SurvivalTest_HeadUnderwater()) return 0;
+	if (!Gui.IconsTex)                 return 0;
+
+	scale = Gui_GetHotbarScale() * DisplayInfo.ScaleY;
+	size  = (int)(9.0f * scale);
+
+	air   = SurvivalTest_AirSupply();
+	full  = Math_Ceil((air - 2) * 10.0f / 300.0f);
+	total = Math_Ceil( air      * 10.0f / 300.0f);
+	if (full  < 0)  full  = 0;
+	if (total > 10) total = 10;
+
+	/* Sit one bubble-height above the heart row (which is itself above the */
+	/*  hotbar), matching the original's height-32-9 vs hearts at height-32. */
+	x = s->hotbar.x;
+	y = s->hotbar.y - size - (int)(2.0f * scale) - size;
+
+	tex.ID = Gui.IconsTex;
+	for (i = 0; i < total; i++) {
+		if (i < full) {
+			Tex_SetUV(tex, BUBBLE_FULL_U1, BUBBLE_V1, BUBBLE_FULL_U2, BUBBLE_V2);
+		} else {
+			Tex_SetUV(tex, BUBBLE_POP_U1,  BUBBLE_V1, BUBBLE_POP_U2,  BUBBLE_V2);
+		}
+		Tex_SetRect(tex, x + i * size, y, size, size);
+		Gfx_Make2DQuad(&tex, PACKEDCOL_WHITE, &cur);
+	}
+	return (int)(cur - dst);
+}
+
+/* HUDScreen.java's SurvivalGameMode labels, rasterised on change like the FPS */
+/*  line: "Score: &eN" (yellow number) and "Arrows: N". Their on-screen */
+/*  positions are pinned per-frame in HUDScreen_BuildMesh. */
+static void HUDScreen_RemakeScore(struct HUDScreen* s) {
+	cc_string str; char buf[STRING_SIZE];
+	int score = SurvivalTest_Score();
+	String_InitArray(str, buf);
+	String_Format1(&str, "Score: &e%i", &score);
+	TextWidget_Set(&s->score, &str, &s->font);
+	s->lastScore = score;
+}
+
+static void HUDScreen_RemakeArrows(struct HUDScreen* s) {
+	cc_string str; char buf[STRING_SIZE];
+	int arrows = SurvivalTest_ArrowCount();
+	String_InitArray(str, buf);
+	String_Format1(&str, "Arrows: %i", &arrows);
+	TextWidget_Set(&s->arrows, &str, &s->font);
+	s->lastArrows = arrows;
+}
+
 static void HUDScreen_BuildMesh(void* screen) {
 	struct HUDScreen* s = (struct HUDScreen*)screen;
+	struct VertexTextured* base;
 	struct VertexTextured* data;
 	struct VertexTextured** ptr;
+	struct VertexTextured* p;
+	float scale;
+	int heartSize, rowY;
 
-	data = Screen_LockVb(s);
+	base = Screen_LockVb(s);
+	data = base;
 	ptr  = &data;
 
 	HUDScreen_BuildCrosshairsMesh(ptr);
@@ -380,8 +692,50 @@ static void HUDScreen_BuildMesh(void* screen) {
 	Widget_BuildMesh(&s->line2,  ptr);
 	Widget_BuildMesh(&s->hotbar, ptr);
 
-	if (!Game_ClassicMode) 
-		HUDScreen_BuildPosition(s, data);
+	if (!Game_ClassicMode)
+		HUDScreen_BuildPosition(s, base + HUD_OFS_POSITION);
+
+	s->heartCount    = HUDScreen_BuildHeartsMesh (s, base + HUD_OFS_HEARTS);
+	s->countVertices = HUDScreen_BuildCountsMesh (s, base + HUD_OFS_COUNTS);
+	s->bubbleCount   = HUDScreen_BuildBubblesMesh(s, base + HUD_OFS_BUBBLES);
+
+	/* Survival Score / Arrows labels. The text textures are rasterised once (on */
+	/*  change) at a fixed font size, but the hotbar/hearts scale with the GUI */
+	/*  scale, so at a large scale the labels looked tiny next to them. Stretch */
+	/*  each label's quad to the SAME on-screen height the original HUDScreen */
+	/*  draws its 8px font at - (8/22) of the hotbar height, exactly like the */
+	/*  stack-count digits - so they track the hotbar at any scale/DPI. Built as */
+	/*  a scaled copy of the widget's texture rather than mutating the widget */
+	/*  (which persists across frames and would compound the scaling). */
+	if (SurvivalTest_Enabled) {
+		struct Texture lbl;
+		float labelH = s->hotbar.height * (8.0f / 22.0f);
+		scale     = Gui_GetHotbarScale() * DisplayInfo.ScaleY;
+		heartSize = (int)(9.0f * scale);
+		rowY      = s->hotbar.y - heartSize - (int)(2.0f * scale);
+
+		/* Score: top-right corner */
+		lbl = s->score.tex;
+		if (lbl.height) {
+			lbl.width  = (cc_uint16)(lbl.width * labelH / lbl.height);
+			lbl.height = (cc_uint16)labelH;
+		}
+		lbl.x = Window_Main.Width - lbl.width - (int)(2.0f * scale);
+		lbl.y = (int)(2.0f * scale);
+		p = base + HUD_OFS_SCORE;
+		Gfx_Make2DQuad(&lbl, s->score.color, &p);
+
+		/* Arrows: beside the heart row, vertically centred on it */
+		lbl = s->arrows.tex;
+		if (lbl.height) {
+			lbl.width  = (cc_uint16)(lbl.width * labelH / lbl.height);
+			lbl.height = (cc_uint16)labelH;
+		}
+		lbl.x = s->hotbar.x + s->hotbar.width / 2 + (int)(8.0f * scale);
+		lbl.y = rowY + (heartSize - (int)labelH) / 2;
+		p = base + HUD_OFS_ARROWS;
+		Gfx_Make2DQuad(&lbl, s->arrows.color, &p);
+	}
 	Gfx_UnlockDynamicVb(s->vb);
 }
 
@@ -400,7 +754,7 @@ static void HUDScreen_Render(void* screen, float delta) {
 	} else if (IsOnlyChatActive() && Gui.ShowFPS) {
 		Widget_Render2(&s->line2, 8);
 		Gfx_BindTexture(s->posAtlas.tex.ID);
-		Gfx_DrawVb_IndexedTris_Range(s->posCount, 12 + HOTBAR_MAX_VERTICES, DRAW_HINT_RECT);
+		Gfx_DrawVb_IndexedTris_Range(s->posCount, HUD_OFS_POSITION, DRAW_HINT_RECT);
 		/* TODO swap these two lines back */
 	}
 
@@ -412,6 +766,37 @@ static void HUDScreen_Render(void* screen, float delta) {
 			Gfx_BindTexture(Gui.IconsTex);
 			Gfx_BindDynamicVb(s->vb); /* Have to rebind for mobile right now... */
 			Gfx_DrawVb_IndexedTris_Range(4, 0, DRAW_HINT_SPRITE);
+		}
+
+		/* Draw survival health hearts above the hotbar */
+		if (SurvivalTest_Enabled && s->heartCount > 0 && Gui.IconsTex) {
+			Gfx_BindTexture(Gui.IconsTex);
+			Gfx_BindDynamicVb(s->vb);
+			Gfx_DrawVb_IndexedTris_Range(s->heartCount, HUD_OFS_HEARTS, DRAW_HINT_SPRITE);
+		}
+
+		/* Draw survival hotbar stack counts (digit atlas) */
+		if (SurvivalTest_Enabled && s->countVertices > 0 && s->countAtlas.tex.ID) {
+			Gfx_BindTexture(s->countAtlas.tex.ID);
+			Gfx_BindDynamicVb(s->vb);
+			Gfx_DrawVb_IndexedTris_Range(s->countVertices, HUD_OFS_COUNTS, DRAW_HINT_RECT);
+		}
+
+		/* Draw survival air bubbles (icons.png) above the hearts when underwater */
+		if (SurvivalTest_Enabled && s->bubbleCount > 0 && Gui.IconsTex) {
+			Gfx_BindTexture(Gui.IconsTex);
+			Gfx_BindDynamicVb(s->vb);
+			Gfx_DrawVb_IndexedTris_Range(s->bubbleCount, HUD_OFS_BUBBLES, DRAW_HINT_SPRITE);
+		}
+
+		/* Draw survival Score / Arrows labels (each binds its own text texture) */
+		if (SurvivalTest_Enabled && s->score.tex.ID) {
+			Gfx_BindDynamicVb(s->vb);
+			Widget_Render2(&s->score, HUD_OFS_SCORE);
+		}
+		if (SurvivalTest_Enabled && s->arrows.tex.ID) {
+			Gfx_BindDynamicVb(s->vb);
+			Widget_Render2(&s->arrows, HUD_OFS_ARROWS);
 		}
 	}
 
@@ -1262,7 +1647,7 @@ static int ChatScreen_KeyDown(void* screen, int key, struct InputDevice* device)
 	} else if (key == CCKEY_SLASH) {
 		ChatScreen_OpenInput(&slash);
 	} else if (InputBind_Claims(BIND_INVENTORY, key, device)) {
-		InventoryScreen_Show();
+		SurvivalInvScreen_Show();
 	} else {
 		return false;
 	}
@@ -1955,6 +2340,531 @@ void InventoryScreen_Hide(void) {
 	struct InventoryScreen* s = &InventoryScreen;
 	Gui_Remove((struct Screen*)s);
 	CPE_SendNotifyAction(NOTIFY_ACTION_BLOCK_LIST_TOGGLED, 0);
+}
+
+
+/*########################################################################################################################*
+*---------------------------------------------------SurvivalInvScreen----------------------------------------------------*
+*#########################################################################################################################*/
+/* Indev-style inventory screen for Classic 0.30 Survival Test. NOT faithful to */
+/* c0.30-s (which never had this screen at all) - this is a visual-only redesign */
+/* requested on top of the existing survival inventory, replacing the previous   */
+/* flat-grid look with a classic light-grey panel, recessed slot bevels, and a   */
+/* 3D player-skin paperdoll that turns to face the mouse cursor.                 */
+/*                                                                                */
+/* Only the 27 storage slots (9-35) are shown/clickable here; the hotbar (0-8)   */
+/* is intentionally left to the normal in-world HUD hotbar, which already        */
+/* renders underneath this screen (matching the reference screenshot, where the  */
+/* hotbar sits outside/below the grey panel in the regular HUD style).           */
+
+/* Base slot size (pixels) before display scaling. */
+#define SURVINV_SLOT_BASE     36
+/* Number of storage rows/columns shown in the panel. */
+#define SURVINV_STORAGE_ROWS  3
+#define SURVINV_STORAGE_COLS  SURVIVAL_HOTBAR_SLOTS
+#define SURVINV_STORAGE_SLOTS (SURVIVAL_INV_SLOTS - SURVIVAL_HOTBAR_SLOTS)
+/* Paperdoll preview box size, in slot units (square). */
+#define SURVINV_DOLL_UNITS    3
+/* Pixel gap (base, before scaling) between the doll box and the storage grid. */
+#define SURVINV_GAP_BASE      10
+/* Pixel padding (base, before scaling) around the panel's inner content. */
+#define SURVINV_PAD_BASE      8
+
+/* Vertex budget: all storage slots + 1 extra slot for the held-item cursor overlay. */
+#define SURVINV_MAX_ISO_VERTS  ((SURVINV_STORAGE_SLOTS + 1) * ISOMETRICDRAWER_MAXVERTICES)
+/* Two digits at most per slot, four vertices per digit. */
+#define SURVINV_MAX_COUNT_VERTS (SURVINV_STORAGE_SLOTS * 2 * 4)
+#define SURVINV_TOTAL_VERTS     (SURVINV_MAX_ISO_VERTS + SURVINV_MAX_COUNT_VERTS)
+
+/* Field of view and camera distance used for the paperdoll preview's own */
+/*  perspective projection (a tighter, portrait-style FOV than the gameplay */
+/*  camera, since it's a close-up of just the player model). */
+#define SURVINV_DOLL_FOV  30.0f
+#define SURVINV_DOLL_DIST  3.4f
+/* Widens the doll's horizontal FOV relative to vertical, so the body sits */
+/*  with comfortable side margin instead of its shoulders touching the box */
+/*  edges (matching the reference Indev/Beta paperdoll's proportions). */
+#define SURVINV_DOLL_ASPECT 1.2f
+
+static struct SurvivalInvScreen {
+	Screen_Body
+	int  isoState[SURVINV_MAX_ISO_VERTS / 4];
+	int  isoVertCount;
+	int  heldSlot;        /* index of the "picked-up" slot, or -1 */
+	int  lastInvVersion;
+	int  gridX, gridY;     /* pixel origin of the top-left storage slot */
+	int  slotSize;         /* current pixel size per slot */
+	int  panelX, panelY, panelW, panelH;
+	int  dollBoxX, dollBoxY, dollBoxSize;
+	int  mouseX, mouseY;   /* last known pointer position, or -1 if none yet */
+	int  countVertCount;
+	struct FontDesc  font;
+	struct TextAtlas countAtlas;
+	struct Texture   titleTex;
+	struct Entity    doll;
+} SurvivalInvScreen_Instance CC_BIG_VAR;
+
+/* Returns the pixel origin (top-left corner) of a storage slot (9-35). */
+static void SurvivalInv_SlotXY(struct SurvivalInvScreen* s, int slot, int* ox, int* oy) {
+	int st  = slot - SURVIVAL_HOTBAR_SLOTS;
+	int col = st % SURVINV_STORAGE_COLS;
+	int row = st / SURVINV_STORAGE_COLS;
+	*ox = s->gridX + col * s->slotSize;
+	*oy = s->gridY + row * s->slotSize;
+}
+
+/* Returns the slot index under screen coordinates (mx, my), or -1. */
+static int SurvivalInv_HitSlot(struct SurvivalInvScreen* s, int mx, int my) {
+	int i, x, y;
+	for (i = SURVIVAL_HOTBAR_SLOTS; i < SURVIVAL_INV_SLOTS; i++) {
+		SurvivalInv_SlotXY(s, i, &x, &y);
+		if (mx >= x && mx < x + s->slotSize &&
+		    my >= y && my < y + s->slotSize) return i;
+	}
+	return -1;
+}
+
+/* The paperdoll is a static, unlit preview - just needs a constant base color. */
+static PackedCol SurvivalInvDoll_GetCol(struct Entity* e) { return PACKEDCOL_WHITE; }
+static const struct EntityVTABLE survivalDoll_VTABLE = {
+	NULL, NULL, NULL, SurvivalInvDoll_GetCol, NULL, NULL
+};
+
+static void SurvivalInv_InitDoll(struct SurvivalInvScreen* s) {
+	Entity_Init(&s->doll);
+	s->doll.VTABLE = &survivalDoll_VTABLE;
+}
+
+/* Renders the 3D player-skin paperdoll, confined to the doll preview box. */
+/*  The body always faces forward; only the head turns to track the cursor. */
+/* Based off the classic Indev/Beta inventory screen's mouse-follow paperdoll; */
+/*  not present in c0.30-s, so there's no decompiled source to ground this in - */
+/*  the rotation math is a reasonable approximation from general knowledge of */
+/*  how that effect has always worked, not a verified original formula. */
+static void SurvivalInv_RenderDoll(struct SurvivalInvScreen* s) {
+	struct Entity* p = &Entities.CurPlayer->Base;
+	struct Matrix proj, savedView;
+	float aspect, relX, relY, headYaw, headPitch;
+	int boxX = s->dollBoxX, boxY = s->dollBoxY, boxSize = s->dollBoxSize;
+	if (boxSize <= 0) return;
+
+	s->doll.SkinType     = p->SkinType;
+	s->doll.TextureId    = p->TextureId;
+	s->doll.NonHumanSkin = p->NonHumanSkin;
+	s->doll.uScale       = p->uScale;
+	s->doll.vScale       = p->vScale;
+
+	if (s->mouseX < 0) {
+		/* No PointerMove event has reached this screen yet (e.g. the very first */
+		/*  frame after opening, before the mouse has moved at all) - atan2 of a */
+		/*  zero offset against boxSize below would hit the same singularity as */
+		/*  an offset of exactly 0, returning a full 90 degrees and turning the */
+		/*  head edge-on to the camera. Look straight ahead instead. */
+		headYaw = 0.0f; headPitch = 0.0f;
+	} else {
+		relX = (float)(s->mouseX - (boxX + boxSize / 2));
+		relY = (float)(s->mouseY - (boxY + boxSize / 3));
+		headYaw   =  Math_Atan2f((float)boxSize, relX) * MATH_RAD2DEG;
+		headPitch = -Math_Atan2f((float)boxSize, relY) * MATH_RAD2DEG;
+	}
+
+	/* Body always faces forward towards the camera; only the head tracks the cursor. */
+	/* RotY 0 makes an entity face -Z (its own look direction), but the camera sits */
+	/*  behind the doll looking down -Z, so RotY must be 180 to turn the body to */
+	/*  face +Z (towards the camera) instead of showing its back. Yaw is offset by */
+	/*  the same 180 so head tracking (Yaw - RotY) keeps the same relative motion. */
+	s->doll.Yaw   = 180.0f + headYaw;
+	s->doll.Pitch = headPitch;
+	s->doll.RotY  = 180.0f;
+	s->doll.RotX  = 0.0f;
+	s->doll.RotZ  = 0.0f;
+	s->doll.Position.x = 0.0f;
+	s->doll.Position.y = -(s->doll.Size.y * 0.5f);
+	s->doll.Position.z = -SURVINV_DOLL_DIST;
+
+	aspect = SURVINV_DOLL_ASPECT;
+	Gfx_CalcPerspectiveMatrix(&proj, SURVINV_DOLL_FOV * MATH_DEG2RAD, aspect, 16.0f);
+
+	savedView   = Gfx.View;
+	Gfx.View    = Matrix_Identity;
+	Gfx_LoadMatrix(MATRIX_VIEW, &Gfx.View);
+	Gfx_LoadMatrix(MATRIX_PROJ, &proj);
+
+	/* Matches the 1px-inset black square drawn in SurvivalInvScreen_Render, */
+	/*  so the 3D render area never overflows into the box's border pixels. */
+	Gfx_SetViewport(boxX + 1, Game.Height - boxY - boxSize + 1, boxSize - 2, boxSize - 2);
+	Gfx_SetScissor (boxX + 1, boxY + 1, boxSize - 2, boxSize - 2);
+	Gfx_ClearBuffers(GFX_BUFFER_DEPTH);
+
+	Gfx_SetDepthTest(true);
+	Gfx_SetDepthWrite(true);
+	Gfx_SetAlphaTest(true);
+
+	Model_Render(s->doll.Model, &s->doll);
+
+	Gfx_SetAlphaTest(false);
+	Gfx_SetDepthWrite(false);
+	Gfx_SetDepthTest(false);
+
+	Gfx_SetViewport(0, 0, Game.Width, Game.Height);
+	Gfx_SetScissor (0, 0, Game.Width, Game.Height);
+
+	Gfx.View = savedView;
+	Gfx_LoadMatrix(MATRIX_VIEW, &Gfx.View);
+	Gfx_LoadMatrix(MATRIX_PROJ, &Gfx.Projection);
+}
+
+static void SurvivalInvScreen_BuildMesh(void* screen) {
+	struct SurvivalInvScreen* s = (struct SurvivalInvScreen*)screen;
+	struct VertexTextured* data;
+	struct VertexTextured* countDst;
+	struct VertexTextured* cur;
+	int i, slotX, slotY, count;
+	BlockID block;
+	float halfSize;
+
+	data     = Screen_LockVb(s);
+	halfSize = s->slotSize * 0.5f;
+
+	/* ISO block pictures for all occupied storage slots */
+	IsometricDrawer_BeginBatch(data, s->isoState);
+	for (i = SURVIVAL_HOTBAR_SLOTS; i < SURVIVAL_INV_SLOTS; i++) {
+		block = SurvivalTest_SlotBlock(i);
+		if (block == BLOCK_AIR) continue;
+		SurvivalInv_SlotXY(s, i, &slotX, &slotY);
+		IsometricDrawer_AddBatch(block, halfSize,
+			slotX + s->slotSize / 2, slotY + s->slotSize / 2);
+	}
+	s->isoVertCount = IsometricDrawer_EndBatch();
+
+	/* Stack-count digit overlay for slots with count > 1 */
+	countDst = data + SURVINV_MAX_ISO_VERTS;
+	cur = countDst;
+	if (s->countAtlas.tex.ID) {
+		int savedY = s->countAtlas.tex.y;
+		for (i = SURVIVAL_HOTBAR_SLOTS; i < SURVIVAL_INV_SLOTS; i++) {
+			count = SurvivalTest_SlotCount(i);
+			if (count <= 1) continue;
+			SurvivalInv_SlotXY(s, i, &slotX, &slotY);
+			s->countAtlas.tex.y = slotY + s->slotSize - s->countAtlas.tex.height - 2;
+			s->countAtlas.curX  = slotX + 2;
+			TextAtlas_AddInt(&s->countAtlas, count, &cur);
+		}
+		s->countAtlas.tex.y = savedY;
+	}
+	s->countVertCount = (int)(cur - countDst);
+	s->lastInvVersion = SurvivalTest_InvVersion();
+
+	Gfx_UnlockDynamicVb(s->vb);
+}
+
+static void SurvivalInvScreen_Render(void* screen, float delta) {
+	struct SurvivalInvScreen* s = (struct SurvivalInvScreen*)screen;
+	int i, slotX, slotY, b;
+
+	/* Sampled from a reference classic-style inventory screenshot. */
+	PackedCol panelBorder = PackedCol_Make( 55,  55,  55, 255);
+	PackedCol panelBg     = PackedCol_Make(198, 198, 198, 255);
+	PackedCol slotFill    = PackedCol_Make(139, 139, 139, 255);
+	PackedCol heldFill    = PackedCol_Make(255, 255, 150, 220);
+	PackedCol highlight   = PackedCol_Make(255, 255, 255, 255);
+	PackedCol dollBg      = PackedCol_Make(  0,   0,   0, 255);
+
+	/* Panel: outer dark border then light-grey fill */
+	Gfx_Draw2DFlat(s->panelX - 2, s->panelY - 2, s->panelW + 4, s->panelH + 4, panelBorder);
+	Gfx_Draw2DFlat(s->panelX,     s->panelY,     s->panelW,     s->panelH,     panelBg);
+
+	/* Paperdoll preview box: recessed dark square */
+	b = s->dollBoxSize;
+	Gfx_Draw2DFlat(s->dollBoxX,     s->dollBoxY,     b,     b,     panelBorder);
+	Gfx_Draw2DFlat(s->dollBoxX + 1, s->dollBoxY + 1, b - 2, b - 2, dollBg);
+
+	/* Slot backgrounds: recessed bevel (dark border + bottom/right highlight) */
+	for (i = SURVIVAL_HOTBAR_SLOTS; i < SURVIVAL_INV_SLOTS; i++) {
+		SurvivalInv_SlotXY(s, i, &slotX, &slotY);
+		Gfx_Draw2DFlat(slotX,     slotY,     s->slotSize,     s->slotSize,
+		               i == s->heldSlot ? heldFill : panelBorder);
+		if (i == s->heldSlot) continue;
+
+		Gfx_Draw2DFlat(slotX + 1, slotY + 1, s->slotSize - 2, s->slotSize - 2, slotFill);
+		Gfx_Draw2DFlat(slotX + 1, slotY + s->slotSize - 2, s->slotSize - 2, 1, highlight);
+		Gfx_Draw2DFlat(slotX + s->slotSize - 2, slotY + 1, 1, s->slotSize - 2, highlight);
+	}
+
+	/* "Inventory" title above the panel */
+	if (s->titleTex.ID) {
+		s->titleTex.x = s->panelX + (s->panelW - s->titleTex.width) / 2;
+		s->titleTex.y = s->panelY - s->titleTex.height - 4;
+		Texture_Render(&s->titleTex);
+	}
+
+	/* Rebuild mesh whenever inventory has changed */
+	if (SurvivalTest_InvVersion() != s->lastInvVersion) s->dirty = true;
+	if (s->dirty) { SurvivalInvScreen_BuildMesh(screen); s->dirty = false; }
+
+	/* ISO block pictures */
+	if (s->isoVertCount > 0) {
+		Gfx_SetVertexFormat(VERTEX_FORMAT_TEXTURED);
+		Gfx_BindDynamicVb(s->vb);
+		IsometricDrawer_Render(s->isoVertCount, 0, s->isoState);
+	}
+
+	/* Stack-count text overlay */
+	if (s->countVertCount > 0 && s->countAtlas.tex.ID) {
+		Gfx_SetVertexFormat(VERTEX_FORMAT_TEXTURED);
+		Gfx_BindTexture(s->countAtlas.tex.ID);
+		Gfx_BindDynamicVb(s->vb);
+		Gfx_DrawVb_IndexedTris_Range(s->countVertCount,
+		                             SURVINV_MAX_ISO_VERTS, DRAW_HINT_RECT);
+	}
+
+	/* 3D paperdoll, confined to its preview box and rotated to face the mouse */
+	SurvivalInv_RenderDoll(s);
+}
+
+static void SurvivalInvScreen_Init(void* screen) {
+	struct SurvivalInvScreen* s = (struct SurvivalInvScreen*)screen;
+	s->widgets     = NULL;
+	s->numWidgets  = 0;
+	s->maxWidgets  = 0;
+	s->heldSlot    = -1;
+	s->mouseX      = -1;
+	s->mouseY      = -1;
+	s->maxVertices = SURVINV_TOTAL_VERTS;
+	SurvivalInv_InitDoll(s);
+	/* Force an initial mesh build */
+	s->lastInvVersion = SurvivalTest_InvVersion() - 1;
+}
+
+static void SurvivalInvScreen_Free(void* screen) {
+	struct SurvivalInvScreen* s = (struct SurvivalInvScreen*)screen;
+	s->heldSlot = -1;
+}
+
+static void SurvivalInvScreen_ContextLost(void* screen) {
+	struct SurvivalInvScreen* s = (struct SurvivalInvScreen*)screen;
+	Font_Free(&s->font);
+	TextAtlas_Free(&s->countAtlas);
+	Gfx_DeleteTexture(&s->titleTex.ID);
+	Screen_ContextLost(screen);
+}
+
+static void SurvivalInvScreen_ContextRecreated(void* screen) {
+	static const cc_string digits = String_FromConst("0123456789");
+	static const cc_string empty  = String_FromConst("");
+	static const cc_string title  = String_FromConst("Inventory");
+	struct SurvivalInvScreen* s = (struct SurvivalInvScreen*)screen;
+	struct DrawTextArgs args;
+
+	Screen_UpdateVb(s);
+	Font_Make(&s->font, 14, FONT_FLAGS_PADDING);
+	Font_SetPadding(&s->font, 1);
+	TextAtlas_Make(&s->countAtlas, &digits, &s->font, &empty);
+
+	DrawTextArgs_Make(&args, &title, &s->font, true);
+	Drawer2D_MakeTextTexture(&s->titleTex, &args);
+	s->dirty = true;
+}
+
+static void SurvivalInvScreen_Layout(void* screen) {
+	struct SurvivalInvScreen* s = (struct SurvivalInvScreen*)screen;
+	int storageW, storageH, gap, pad, topAreaH;
+
+	s->slotSize = Display_ScaleX((int)(SURVINV_SLOT_BASE * Gui_GetInventoryScale()));
+	if (s->slotSize < 16) s->slotSize = 16; /* minimum usable size */
+
+	gap = (int)(SURVINV_GAP_BASE * Gui_GetInventoryScale());
+	pad = (int)(SURVINV_PAD_BASE * Gui_GetInventoryScale());
+
+	storageW = SURVINV_STORAGE_COLS * s->slotSize;
+	storageH = SURVINV_STORAGE_ROWS * s->slotSize;
+	s->dollBoxSize = SURVINV_DOLL_UNITS * s->slotSize;
+	topAreaH = s->dollBoxSize;
+
+	s->panelW = storageW + pad * 2;
+	s->panelH = pad + topAreaH + gap + storageH + pad;
+
+	s->panelX = (Window_Main.Width  - s->panelW) / 2;
+	s->panelY = (Window_Main.Height - s->panelH) / 2;
+
+	s->dollBoxX = s->panelX + pad;
+	s->dollBoxY = s->panelY + pad;
+
+	s->gridX = s->panelX + pad;
+	s->gridY = s->panelY + pad + topAreaH + gap;
+
+	s->dirty = true;
+}
+
+static int SurvivalInvScreen_KeyDown(void* screen, int key, struct InputDevice* device) {
+	struct SurvivalInvScreen* s = (struct SurvivalInvScreen*)screen;
+	if (InputBind_Claims(BIND_INVENTORY, key, device) || key == CCKEY_ESCAPE) {
+		s->heldSlot = -1;
+		Gui_Remove((struct Screen*)s);
+	}
+	return true;
+}
+
+static int SurvivalInvScreen_PointerDown(void* screen, int id, int x, int y) {
+	struct SurvivalInvScreen* s = (struct SurvivalInvScreen*)screen;
+	int hit = SurvivalInv_HitSlot(s, x, y);
+
+	if (hit < 0) {
+		/* Clicked outside the grid - deselect and close */
+		s->heldSlot = -1;
+		Gui_Remove((struct Screen*)s);
+		return TOUCH_TYPE_GUI;
+	}
+
+	if (s->heldSlot < 0) {
+		/* Nothing held: pick up the slot if it has something */
+		if (SurvivalTest_SlotBlock(hit) != BLOCK_AIR)
+			s->heldSlot = hit;
+	} else if (s->heldSlot == hit) {
+		/* Clicked the same slot again: deselect */
+		s->heldSlot = -1;
+	} else {
+		/* Different slot: swap the two stacks */
+		SurvivalTest_SwapSlots(s->heldSlot, hit);
+		s->heldSlot = -1;
+		s->dirty    = true;
+	}
+	return TOUCH_TYPE_GUI;
+}
+
+/* Tracks the cursor so the paperdoll can turn to face it. */
+static int SurvivalInvScreen_PointerMove(void* screen, int id, int x, int y) {
+	struct SurvivalInvScreen* s = (struct SurvivalInvScreen*)screen;
+	s->mouseX = x;
+	s->mouseY = y;
+	return false;
+}
+
+static const struct ScreenVTABLE SurvivalInvScreen_VTABLE = {
+	SurvivalInvScreen_Init,        Screen_NullUpdate,           SurvivalInvScreen_Free,
+	SurvivalInvScreen_Render,      SurvivalInvScreen_BuildMesh,
+	SurvivalInvScreen_KeyDown,     Screen_InputUp,              Screen_FKeyPress, Screen_FText,
+	SurvivalInvScreen_PointerDown, Screen_PointerUp,            SurvivalInvScreen_PointerMove, Screen_FMouseScroll,
+	SurvivalInvScreen_Layout,      SurvivalInvScreen_ContextLost, SurvivalInvScreen_ContextRecreated,
+	NULL
+};
+
+void SurvivalInvScreen_Show(void) {
+	struct SurvivalInvScreen* s = &SurvivalInvScreen_Instance;
+	/* Non-survival modes use the normal creative block-grid inventory. */
+	if (!SurvivalTest_Enabled) { InventoryScreen_Show(); return; }
+	/* Faithful Classic 0.30-s had no inventory screen whatsoever - just the */
+	/*  fixed hotbar - so opening the inventory does nothing at all. The paperdoll */
+	/*  storage screen below is an Enhanced-only extra, not authentic to c0.30-s. */
+	if (!SurvivalTest_Enhanced) return;
+	s->grabsInput = true;
+	s->closable   = true;
+	s->VTABLE     = &SurvivalInvScreen_VTABLE;
+	Gui_Add((struct Screen*)s, GUI_PRIORITY_INVENTORY);
+}
+
+
+/*########################################################################################################################*
+*------------------------------------------------------GameOverScreen-----------------------------------------------------*
+*#########################################################################################################################*/
+/* Shown when the player dies in Survival Test. Faithful to Classic 0.30-s: */
+/* there is no respawn - the world is over, and the only way forward is to  */
+/* generate a fresh level (or quit the game).                               */
+static struct GameOverScreen {
+	Screen_Body
+	struct FontDesc titleFont, messageFont, btnFont;
+	struct TextWidget title, message;
+	struct ButtonWidget gen, quit;
+	struct Widget* __widgets[4];
+} GameOverScreen CC_BIG_VAR;
+
+static void GameOverScreen_Layout(void* screen) {
+	struct GameOverScreen* s = (struct GameOverScreen*)screen;
+	Widget_SetLocation(&s->title,   ANCHOR_CENTRE, ANCHOR_CENTRE, 0, -60);
+	Widget_SetLocation(&s->message, ANCHOR_CENTRE, ANCHOR_CENTRE, 0, -20);
+	Widget_SetLocation(&s->gen,     ANCHOR_CENTRE, ANCHOR_CENTRE, 0,  40);
+	Widget_SetLocation(&s->quit,    ANCHOR_CENTRE, ANCHOR_CENTRE, 0,  90);
+}
+
+static void GameOverScreen_ContextLost(void* screen) {
+	struct GameOverScreen* s = (struct GameOverScreen*)screen;
+	Font_Free(&s->titleFont);
+	Font_Free(&s->messageFont);
+	Font_Free(&s->btnFont);
+	Screen_ContextLost(screen);
+}
+
+static void GameOverScreen_ContextRecreated(void* screen) {
+	struct GameOverScreen* s = (struct GameOverScreen*)screen;
+	cc_string msg; char msgBuffer[STRING_SIZE];
+	int score = SurvivalTest_Score();
+	Screen_UpdateVb(screen);
+
+	/* GameOverScreen.render(): "Game over!" is drawn at 2x scale (glScalef(2,2,2)) */
+	/*  - titleFont's usual 16 doubled to 32, instead of the bold-but-normal-size */
+	/*  font every other screen's title uses. */
+	Font_Make(&s->titleFont, 32, FONT_FLAGS_BOLD);
+	Gui_MakeBodyFont(&s->messageFont);
+	Gui_MakeTitleFont(&s->btnFont);
+	TextWidget_SetConst(&s->title, "Game over!", &s->titleFont);
+
+	String_InitArray(msg, msgBuffer);
+	String_Format1(&msg, "Score: &e%i", &score);
+	TextWidget_Set(&s->message, &msg, &s->messageFont);
+
+	ButtonWidget_SetConst(&s->gen,  "Generate new level...", &s->btnFont);
+	ButtonWidget_SetConst(&s->quit, "Quit game",             &s->btnFont);
+}
+
+static void GameOverScreen_OnGen(void* screen, void* w) {
+	Gui_Remove((struct Screen*)&GameOverScreen);
+	GenLevelScreen_Show();
+}
+
+static void GameOverScreen_OnQuit(void* screen, void* w) {
+	Window_RequestClose();
+}
+
+static void GameOverScreen_Init(void* screen) {
+	struct GameOverScreen* s = (struct GameOverScreen*)screen;
+	s->widgets     = s->__widgets;
+	s->numWidgets  = 0;
+	s->maxWidgets  = Array_Elems(s->__widgets);
+
+	TextWidget_Add(s, &s->title);
+	TextWidget_Add(s, &s->message);
+	ButtonWidget_Add(s, &s->gen,  400, GameOverScreen_OnGen);
+	ButtonWidget_Add(s, &s->quit, 400, GameOverScreen_OnQuit);
+
+	s->maxVertices = Screen_CalcDefaultMaxVertices(s);
+}
+
+static void GameOverScreen_Render(void* screen, float delta) {
+	/* drawFadingBox(0, 0, width, height, 1615855616, -1602211792) - the two */
+	/*  ARGB literals decode to a dark red top edge fading into a more opaque, */
+	/*  lighter maroon bottom edge (not a neutral gray, like the original */
+	/*  ClassiCube colors here used to be). */
+	PackedCol top    = PackedCol_Make(80,  0,  0,  96);
+	PackedCol bottom = PackedCol_Make(128, 48, 48, 160);
+	Gfx_Draw2DGradient(0, 0, Window_UI.Width, Window_UI.Height, top, bottom);
+
+	Screen_Render2Widgets(screen, delta);
+}
+
+static const struct ScreenVTABLE GameOverScreen_VTABLE = {
+	GameOverScreen_Init,   Screen_NullUpdate, Screen_NullFunc,
+	GameOverScreen_Render, Screen_BuildMesh,
+	Menu_InputDown,        Screen_InputUp,    Screen_TKeyPress, Screen_TText,
+	Menu_PointerDown,      Screen_PointerUp,  Menu_PointerMove, Screen_TMouseScroll,
+	GameOverScreen_Layout, GameOverScreen_ContextLost, GameOverScreen_ContextRecreated
+};
+
+void GameOverScreen_Show(void) {
+	struct GameOverScreen* s = &GameOverScreen;
+	s->grabsInput  = true;
+	s->blocksWorld = true;
+	s->VTABLE      = &GameOverScreen_VTABLE;
+	Gui_Add((struct Screen*)s, GUI_PRIORITY_DISCONNECT);
 }
 
 

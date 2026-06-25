@@ -171,6 +171,9 @@ void HeldBlockRenderer_ClickAnim(cc_bool digging) {
 	held_animating = true;
 	/* Start place animation at bottom of cycle */
 	if (!digging) held_time = held_period / 2;
+
+	if (Entities.CurPlayer)
+		AnimatedComp_StartPunch(&Entities.CurPlayer->Base.Anim);
 }
 
 static void DoSwitchBlockAnim(void* obj) {

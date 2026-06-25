@@ -184,12 +184,12 @@ static void SwitchToUpdates(void* w)       { UpdatesScreen_SetActive(); }
 static struct ChooseModeScreen {
 	LScreen_Layout
 	struct LLine seps[2];
-	struct LButton btnEnhanced, btnClassicHax, btnClassic, btnBack;
-	struct LLabel  lblHelp, lblEnhanced[2], lblClassicHax[2], lblClassic[2];
+	struct LButton btnEnhanced, btnClassicHax, btnClassic, btnSurvival, btnBack;
+	struct LLabel  lblHelp, lblEnhanced[2], lblClassicHax[2], lblClassic[2], lblSurvival[2];
 	cc_bool firstTime;
 } ChooseModeScreen CC_BIG_VAR;
 
-#define CHOOSEMODE_SCREEN_MAX_WIDGETS 12
+#define CHOOSEMODE_SCREEN_MAX_WIDGETS 15
 static struct LWidget* chooseMode_widgets[CHOOSEMODE_SCREEN_MAX_WIDGETS];
 
 LAYOUTS mode_seps0[] = { { ANCHOR_CENTRE, -5 }, { ANCHOR_CENTRE, -85 } };
@@ -205,9 +205,21 @@ LAYOUTS mode_btnClassic[]     = { { ANCHOR_CENTRE_MIN, -250 }, { ANCHOR_CENTRE, 
 LAYOUTS mode_lblClassic0[]    = { { ANCHOR_CENTRE_MIN,  -85 }, { ANCHOR_CENTRE,   20 - 12 } };
 LAYOUTS mode_lblClassic1[]    = { { ANCHOR_CENTRE_MIN,  -85 }, { ANCHOR_CENTRE,   20 + 12 } };
 
+LAYOUTS mode_btnSurvival[]  = { { ANCHOR_CENTRE_MIN, -250 }, { ANCHOR_CENTRE,  90      } };
+LAYOUTS mode_lblSurvival0[] = { { ANCHOR_CENTRE_MIN,  -85 }, { ANCHOR_CENTRE,  90 - 12 } };
+LAYOUTS mode_lblSurvival1[] = { { ANCHOR_CENTRE_MIN,  -85 }, { ANCHOR_CENTRE,  90 + 12 } };
+
 LAYOUTS mode_lblHelp[] = { { ANCHOR_CENTRE, 0 }, { ANCHOR_CENTRE, 160 } };
 LAYOUTS mode_btnBack[] = { { ANCHOR_CENTRE, 0 }, { ANCHOR_CENTRE, 170 } };
 
+
+static void SurvivalMode_Click(void* w_) {
+	struct LButton* w = (struct LButton*)w_;
+	cc_bool enabled = !Options_GetBool(OPT_SURVIVAL_MODE, false);
+
+	Options_SetBool(OPT_SURVIVAL_MODE, enabled);
+	LButton_SetConst(w, enabled ? "Survival: ON" : "Survival: OFF");
+}
 
 CC_NOINLINE static void ChooseMode_Click(cc_bool classic, cc_bool classicHacks) {
 	Options_PauseSaving();
@@ -246,10 +258,16 @@ static void ChooseModeScreen_Activated(struct LScreen* s_) {
 	LLabel_Add(s,  &s->lblClassicHax[0], "&eSame as Classic mode, except that",    mode_lblClassicHax0);
 	LLabel_Add(s,  &s->lblClassicHax[1], "&ehacks (noclip/fly/speed) are enabled", mode_lblClassicHax1);
 
-	LButton_Add(s, &s->btnClassic, 145, 35, "Classic",                        
+	LButton_Add(s, &s->btnClassic, 145, 35, "Classic",
 				UseModeClassic,    mode_btnClassic);
 	LLabel_Add(s,  &s->lblClassic[0], "&eOnly uses blocks and features from", mode_lblClassic0);
 	LLabel_Add(s,  &s->lblClassic[1], "&ethe original minecraft classic",     mode_lblClassic1);
+
+	LButton_Add(s, &s->btnSurvival, 145, 35,
+				Options_GetBool(OPT_SURVIVAL_MODE, false) ? "Survival: ON" : "Survival: OFF",
+				SurvivalMode_Click, mode_btnSurvival);
+	LLabel_Add(s,  &s->lblSurvival[0], "&eBased on Classic Survival Test - adds", mode_lblSurvival0);
+	LLabel_Add(s,  &s->lblSurvival[1], "&ehearts, hunger, mobs, and mining",      mode_lblSurvival1);
 
 	if (s->firstTime) {
 		LLabel_Add(s,  &s->lblHelp, "&eClick &fEnhanced &eif you're not sure which mode to choose.", mode_lblHelp);
@@ -1503,11 +1521,11 @@ static void SettingsScreen_AddWidgets(struct SettingsScreen* s) {
 				SettingsScreen_AutoClose,       set_cbExtra);
 #endif
 
-	LCheckbox_Add(s, &s->cbEmpty, "Show empty servers in list", 
+	LCheckbox_Add(s, &s->cbEmpty, "Show empty servers in list",
 				SettingsScreen_ShowEmpty,  set_cbEmpty);
-	LCheckbox_Add(s, &s->cbScale, "Use display scaling", 
+	LCheckbox_Add(s, &s->cbScale, "Use display scaling",
 				SettingsScreen_DPIScaling, set_cbScale);
-	LButton_Add(s,   &s->btnBack, 80, 35, "Back", 
+	LButton_Add(s,   &s->btnBack, 80, 35, "Back",
 				SwitchToMain, set_btnBack);
 }
 

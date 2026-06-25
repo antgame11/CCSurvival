@@ -41,6 +41,7 @@
 #include "SystemFonts.h"
 #include "Formats.h"
 #include "EntityRenderers.h"
+#include "SurvivalTest.h"
 
 struct _GameData Game;
 static cc_uint64 frameStart;
@@ -440,6 +441,7 @@ static void Game_Load(void) {
 	Game_AddComponent(&AxisLinesRenderer_Component);
 	Game_AddComponent(&Formats_Component);
 	Game_AddComponent(&EntityRenderers_Component);
+	Game_AddComponent(&SurvivalTest_Component);
 
 	Plugins_LoadAll();
 	for (comp = comps_head; comp; comp = comp->next) {
@@ -492,6 +494,7 @@ static void Render3DFrame(float delta, float t) {
 	Vec3 pos;
 
 	Camera.Active->GetView(&Gfx.View);
+	SurvivalTest_ApplyHurtTilt(&Gfx.View, t);
 	/*Gfx_LoadMatrix(MATRIX_PROJ, &Gfx.Projection);
 	Gfx_LoadMatrix(MATRIX_VIEW, &Gfx.View);
 	Frustum_CalcPlanes(&Gfx.Projection, &Gfx.View);*/
@@ -501,6 +504,10 @@ static void Render3DFrame(float delta, float t) {
 	if (EnvRenderer_ShouldRenderSkybox()) EnvRenderer_RenderSkybox();
 	AxisLinesRenderer_Render();
 	Entities_RenderModels(delta, t);
+	SurvivalTest_RenderDrops(delta, t);
+	SurvivalTest_RenderMobs(delta, t);
+	SurvivalTest_RenderArrows(delta, t);
+	SurvivalTest_RenderTnt(delta, t);
 	EntityNames_Render();
 
 	Particles_Render(t);
@@ -515,6 +522,7 @@ static void Render3DFrame(float delta, float t) {
 	if (Game_SelectedPos.valid && !Game_HideGui) {
 		SelOutlineRenderer_Render(&Game_SelectedPos, true);
 	}
+	SurvivalTest_RenderCracks(delta, t);
 
 	/* Render water over translucent blocks when under the water outside the map for proper alpha blending */
 	pos = Camera.CurrentPos;

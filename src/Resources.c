@@ -815,11 +815,12 @@ static struct ResourceZipEntry defaultZipEntries[] = {
 	{ "icons.png",    RESOURCE_TYPE_DATA }, { "gui_classic.png", RESOURCE_TYPE_DATA },
 	{ "creeper.png",  RESOURCE_TYPE_DATA }, { "pig.png",         RESOURCE_TYPE_DATA }, 
 	{ "sheep.png",    RESOURCE_TYPE_DATA }, { "sheep_fur.png",   RESOURCE_TYPE_DATA },
-	{ "skeleton.png", RESOURCE_TYPE_DATA }, { "spider.png",      RESOURCE_TYPE_DATA }, 
-	{ "zombie.png",   RESOURCE_TYPE_DATA },
+	{ "skeleton.png", RESOURCE_TYPE_DATA }, { "spider.png",      RESOURCE_TYPE_DATA },
+	{ "zombie.png",   RESOURCE_TYPE_DATA }, { "arrows.png",      RESOURCE_TYPE_DATA },
+	{ "plate.png",    RESOURCE_TYPE_DATA },
 	/* other files */
 	{ "snow.png", RESOURCE_TYPE_DATA }, { "chicken.png",    RESOURCE_TYPE_DATA },
-	{ "gui.png",  RESOURCE_TYPE_DATA }, { "animations.png", RESOURCE_TYPE_PNG  }, 
+	{ "gui.png",  RESOURCE_TYPE_DATA }, { "animations.png", RESOURCE_TYPE_PNG  },
 	{ "animations.txt", RESOURCE_TYPE_CONST, sizeof(ANIMS_TXT) - 1, (cc_uint8*)ANIMS_TXT },
 #ifdef CC_BUILD_MOBILE
 	{ "touch.png", RESOURCE_TYPE_DATA }
