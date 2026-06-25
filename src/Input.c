@@ -221,8 +221,8 @@ void Input_SetPressed(int key) {
 	if (key == 'C' && Input_IsActionPressed()) Event_RaiseInput(&InputEvents.Down2, INPUT_CLIPBOARD_COPY,  0, &NormDevice);
 	if (key == 'V' && Input_IsActionPressed()) Event_RaiseInput(&InputEvents.Down2, INPUT_CLIPBOARD_PASTE, 0, &NormDevice);
 
-	/* don't allow multiple left mouse down events */
-	if (key != CCMOUSE_L || wasPressed) return;
+	/* don't allow multiple mouse down events for the same button */
+	if ((key != CCMOUSE_L && key != CCMOUSE_R) || wasPressed) return;
 	Pointer_SetPressed(0, true);
 }
 
@@ -233,7 +233,7 @@ void Input_SetReleased(int key) {
 	if (key <= CCMOUSE_M) Event_RaiseInput(&InputEvents._up, key, true, &NormDevice);
 	Event_RaiseInput(&InputEvents.Up2, key, true, &NormDevice);
 
-	if (key == CCMOUSE_L) Pointer_SetPressed(0, false);
+	if (key == CCMOUSE_L || key == CCMOUSE_R) Pointer_SetPressed(0, false);
 }
 
 void Input_Set(int key, int pressed) {
