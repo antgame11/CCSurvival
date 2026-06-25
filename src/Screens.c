@@ -2573,6 +2573,28 @@ static void SurvivalInvScreen_Render(void* screen, float delta) {
 		Gfx_Draw2DFlat(slotX + s->slotSize - 2, slotY + 1, 1, s->slotSize - 2, highlight);
 	}
 
+	/* Hovered slot highlight: translucent white overlay, matching vanilla Minecraft's */
+	/*  GuiContainer slot-hover feedback (drawn after the bevels, before the icons). */
+	if (s->mouseX >= 0) {
+		PackedCol hoverCol = PackedCol_Make(255, 255, 255, 96);
+		int hit = SurvivalInv_HitSlot(s, s->mouseX, s->mouseY);
+		if (hit < 0) hit = -1;
+		if (hit >= 0 && hit != s->heldSlot) {
+			SurvivalInv_SlotXY(s, hit, &slotX, &slotY);
+			Gfx_SetAlphaBlending(true);
+			Gfx_Draw2DFlat(slotX + 1, slotY + 1, s->slotSize - 2, s->slotSize - 2, hoverCol);
+			Gfx_SetAlphaBlending(false);
+		} else {
+			int hitC = SurvivalInv_HitCraftSlot(s, s->mouseX, s->mouseY);
+			if (hitC >= 0 && hitC != s->heldCraftSlot) {
+				SurvivalInv_CraftSlotXY(s, hitC, &slotX, &slotY);
+				Gfx_SetAlphaBlending(true);
+				Gfx_Draw2DFlat(slotX + 1, slotY + 1, s->slotSize - 2, s->slotSize - 2, hoverCol);
+				Gfx_SetAlphaBlending(false);
+			}
+		}
+	}
+
 	/* "Inventory" title above the panel */
 	if (s->titleTex.ID) {
 		s->titleTex.x = s->panelX + (s->panelW - s->titleTex.width) / 2;
@@ -2652,7 +2674,7 @@ static void SurvivalInvScreen_ContextRecreated(void* screen) {
 
 static void SurvivalInvScreen_Layout(void* screen) {
 	struct SurvivalInvScreen* s = (struct SurvivalInvScreen*)screen;
-	int storageW, storageH, gap, pad, topAreaH, craftGridW;
+	int storageW, storageH, gap, pad, topAreaH;
 
 	s->slotSize = Display_ScaleX((int)(SURVINV_SLOT_BASE * Gui_GetInventoryScale()));
 	if (s->slotSize < 16) s->slotSize = 16; /* minimum usable size */
@@ -2663,7 +2685,6 @@ static void SurvivalInvScreen_Layout(void* screen) {
 	storageW = SURVINV_STORAGE_COLS * s->slotSize;
 	storageH = SURVINV_STORAGE_ROWS * s->slotSize;
 	s->dollBoxSize = SURVINV_DOLL_UNITS * s->slotSize;
-	craftGridW = 2 * s->slotSize + gap;  /* 2x2 grid + gap + result slot */
 	topAreaH = s->dollBoxSize;
 
 	/* +gap +slotSize accounts for the hotbar row drawn below the storage grid, */
@@ -2677,11 +2698,14 @@ static void SurvivalInvScreen_Layout(void* screen) {
 	s->dollBoxX = s->panelX + pad;
 	s->dollBoxY = s->panelY + pad;
 
-	/* Crafting grid to the right of the doll box */
+	/* Crafting grid to the right of the doll box. The result slot sits further */
+	/*  away with a wider gap and is centred against the 2-row-tall grid, matching */
+	/*  the genuine Minecraft Beta crafting layout (grid at 88,26; result at 144,36 */
+	/*  within a 176x166 panel - roughly a 2-slot gap before the result slot). */
 	s->craftGridX = s->panelX + pad + s->dollBoxSize + gap;
 	s->craftGridY = s->panelY + pad;
-	s->craftResultX = s->craftGridX + 2 * s->slotSize + gap;
-	s->craftResultY = s->craftGridY + s->slotSize;  /* center vertically */
+	s->craftResultX = s->craftGridX + 2 * s->slotSize + gap * 2;
+	s->craftResultY = s->craftGridY + s->slotSize / 2;  /* centered against the 2-row grid */
 
 	s->gridX = s->panelX + pad;
 	s->gridY = s->panelY + pad + topAreaH + gap;
