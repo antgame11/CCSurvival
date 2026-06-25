@@ -2852,6 +2852,8 @@ static int SurvivalInvScreen_PointerDown(void* screen, int id, int x, int y) {
 			if (SurvivalTest_CraftSlotBlock(hitCraft) != BLOCK_AIR)
 				s->heldCraftSlot = hitCraft;
 			s->dirty = true;
+			/* Removing an ingredient may invalidate the previewed result */
+			SurvivalTest_TryCraft();
 		} else if (s->heldCraftSlot == hitCraft) {
 			/* Clicked the same slot again: deselect */
 			s->heldCraftSlot = -1;
@@ -2890,6 +2892,8 @@ static int SurvivalInvScreen_PointerDown(void* screen, int id, int x, int y) {
 			SurvivalTest_SetCraftSlot(s->heldCraftSlot, newSrcBlock, newSrcCount);
 			if (newSrcCount <= 0) s->heldCraftSlot = -1;
 			s->dirty = true;
+			/* Moving an ingredient out of the grid may invalidate the previewed result */
+			SurvivalTest_TryCraft();
 			return TOUCH_TYPE_GUI;
 		}
 

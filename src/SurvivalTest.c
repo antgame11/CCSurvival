@@ -3162,12 +3162,14 @@ void SurvivalTest_SetCraftSlot(int slot, BlockID block, int count) {
 	st_invVersion++;
 }
 
-/* Attempts to execute a craft with the current 2x2 grid. Returns true if successful. */
+/* Recomputes the result-slot preview from the current 2x2 grid, without consuming */
+/*  any ingredients - matching vanilla Minecraft, where the output slot just shows */
+/*  what *would* be crafted, and ingredients are only spent once the result is taken */
+/*  (see SurvivalTest_TakeCraftResult). Returns true if a recipe currently matches. */
 cc_bool SurvivalTest_TryCraft(void) {
-	int outCount, planks, i;
+	int outCount;
 	BlockID result, a, b, c, d;
 	if (!SurvivalTest_Enabled) return false;
-	if (st_craftResult.block != BLOCK_AIR) return false; /* result slot must be empty */
 
 	a = st_craft2x2[0].block;
 	b = st_craft2x2[1].block;
@@ -3175,9 +3177,22 @@ cc_bool SurvivalTest_TryCraft(void) {
 	d = st_craft2x2[3].block;
 
 	result = SurvivalTest_TryCraft2x2Simple(a, b, c, d, &outCount);
-	if (result == BLOCK_AIR) return false;
 
-	/* Consume ingredients based on recipe matched */
+	st_craftResult.block = result;
+	st_craftResult.count = result == BLOCK_AIR ? 0 : outCount;
+	st_invVersion++;
+	return result != BLOCK_AIR;
+}
+
+/* Consumes the ingredients for whichever recipe is currently shown in the result */
+/*  slot (called only once the player actually takes the result - see TakeCraftResult). */
+static void SurvivalTest_ConsumeCraftIngredients(BlockID result) {
+	int i;
+	BlockID a = st_craft2x2[0].block;
+	BlockID b = st_craft2x2[1].block;
+	BlockID c = st_craft2x2[2].block;
+	BlockID d = st_craft2x2[3].block;
+
 	/* Sticks: consume planks */
 	if (result == SURVIVAL_ITEM_STICK) {
 		if (a == BLOCK_WOOD) st_craft2x2[0].count--;
@@ -3211,11 +3226,6 @@ cc_bool SurvivalTest_TryCraft(void) {
 	for (i = 0; i < 4; i++) {
 		if (st_craft2x2[i].count <= 0) st_craft2x2[i].block = BLOCK_AIR;
 	}
-
-	st_craftResult.block = result;
-	st_craftResult.count = outCount;
-	st_invVersion++;
-	return true;
 }
 
 /* Places a single tool instance with the given durability into the first empty slot. */
@@ -3233,24 +3243,32 @@ static void SurvivalTest_AddTool(BlockID tool, int durability) {
 	/* Inventory full - drop is discarded */
 }
 
-/* Takes crafting result and adds it to inventory, then clears result slot. */
+/* Takes crafting result and adds it to inventory, consuming the grid's ingredients */
+/*  only now (matching vanilla - filling the grid just previews the result; nothing */
+/*  is actually spent until the output is taken). Re-previews afterwards in case */
+/*  enough ingredients remain in the grid for another craft, also matching vanilla. */
 void SurvivalTest_TakeCraftResult(void) {
 	int i;
+	BlockID result;
 	if (!SurvivalTest_Enabled) return;
 	if (st_craftResult.block == BLOCK_AIR) return;
+	result = st_craftResult.block;
 
 	/* Tools: result.count is durability (uses remaining), not a stack quantity - */
 	/*  place exactly one tool instance rather than looping AddBlock count times */
 	/*  (which would otherwise create that many separate 1-use tools). */
-	if (st_craftResult.block >= SURVIVAL_ITEM_TOOL_BASE) {
-		SurvivalTest_AddTool(st_craftResult.block, st_craftResult.count);
+	if (result >= SURVIVAL_ITEM_TOOL_BASE) {
+		SurvivalTest_AddTool(result, st_craftResult.count);
 	} else {
 		for (i = 0; i < st_craftResult.count; i++) {
-			SurvivalTest_AddBlock(st_craftResult.block);
+			SurvivalTest_AddBlock(result);
 		}
 	}
+
+	SurvivalTest_ConsumeCraftIngredients(result);
 	st_craftResult.block = BLOCK_AIR;
 	st_craftResult.count = 0;
+	SurvivalTest_TryCraft(); /* re-preview: grid may still have enough for another */
 	st_invVersion++;
 }
 
