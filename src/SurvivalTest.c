@@ -111,17 +111,16 @@ static void SurvivalTest_InitRecipes(void) {
 
 /* Sticks from planks: 2x2 empty, or via crafting */
 static BlockID SurvivalTest_TryCraft2x2Simple(BlockID a, BlockID b, BlockID c, BlockID d, int* outCount) {
+	/* Workbench: 4 planks -> 1 workbench (checked before sticks, since 4 planks also satisfy the stick pattern) */
+	if (a == BLOCK_WOOD && b == BLOCK_WOOD && c == BLOCK_WOOD && d == BLOCK_WOOD) {
+		*outCount = 1;
+		return SURVIVAL_BLOCK_WORKBENCH;
+	}
 	/* All are the same plank-like = sticks */
 	if ((a == BLOCK_WOOD || a == BLOCK_AIR) && (b == BLOCK_WOOD || b == BLOCK_AIR) &&
 	    (c == BLOCK_WOOD || c == BLOCK_AIR) && (d == BLOCK_WOOD || d == BLOCK_AIR)) {
 		int planks = (a == BLOCK_WOOD) + (b == BLOCK_WOOD) + (c == BLOCK_WOOD) + (d == BLOCK_WOOD);
-		if (planks == 4) { *outCount = 4; return SURVIVAL_ITEM_STICK; }
 		if (planks >= 2) { *outCount = 2; return SURVIVAL_ITEM_STICK; }
-	}
-	/* Workbench: 4 planks -> 1 workbench */
-	if (a == BLOCK_WOOD && b == BLOCK_WOOD && c == BLOCK_WOOD && d == BLOCK_WOOD) {
-		*outCount = 1;
-		return SURVIVAL_BLOCK_WORKBENCH;
 	}
 	/* Torch: coal + stick */
 	if ((a == BLOCK_COAL_ORE && d == SURVIVAL_ITEM_STICK) ||
