@@ -2352,10 +2352,9 @@ void InventoryScreen_Hide(void) {
 /* flat-grid look with a classic light-grey panel, recessed slot bevels, and a   */
 /* 3D player-skin paperdoll that turns to face the mouse cursor.                 */
 /*                                                                                */
-/* Only the 27 storage slots (9-35) are shown/clickable here; the hotbar (0-8)   */
-/* is intentionally left to the normal in-world HUD hotbar, which already        */
-/* renders underneath this screen (matching the reference screenshot, where the  */
-/* hotbar sits outside/below the grey panel in the regular HUD style).           */
+/* All 36 inventory slots (9-35 storage + 0-8 hotbar) are shown/clickable here,  */
+/* matching the genuine Minecraft Beta inventory layout: 3 storage rows on top   */
+/* of a 4th hotbar row, separated by a small gap.                                */
 
 /* Base slot size (pixels) before display scaling. */
 #define SURVINV_SLOT_BASE     36
@@ -2363,6 +2362,8 @@ void InventoryScreen_Hide(void) {
 #define SURVINV_STORAGE_ROWS  3
 #define SURVINV_STORAGE_COLS  SURVIVAL_HOTBAR_SLOTS
 #define SURVINV_STORAGE_SLOTS (SURVIVAL_INV_SLOTS - SURVIVAL_HOTBAR_SLOTS)
+/* All slots shown in the panel: 27 storage + 9 hotbar. */
+#define SURVINV_ALL_SLOTS     SURVIVAL_INV_SLOTS
 /* Paperdoll preview box size, in slot units (square). */
 #define SURVINV_DOLL_UNITS    3
 /* Pixel gap (base, before scaling) between the doll box and the storage grid. */
@@ -2370,10 +2371,10 @@ void InventoryScreen_Hide(void) {
 /* Pixel padding (base, before scaling) around the panel's inner content. */
 #define SURVINV_PAD_BASE      8
 
-/* Vertex budget: all storage slots + 1 extra slot for the held-item cursor overlay. */
-#define SURVINV_MAX_ISO_VERTS  ((SURVINV_STORAGE_SLOTS + 1) * ISOMETRICDRAWER_MAXVERTICES)
+/* Vertex budget: all 36 inventory slots + 1 extra slot for the held-item cursor overlay. */
+#define SURVINV_MAX_ISO_VERTS  ((SURVINV_ALL_SLOTS + 1) * ISOMETRICDRAWER_MAXVERTICES)
 /* Two digits at most per slot, four vertices per digit. */
-#define SURVINV_MAX_COUNT_VERTS (SURVINV_STORAGE_SLOTS * 2 * 4)
+#define SURVINV_MAX_COUNT_VERTS (SURVINV_ALL_SLOTS * 2 * 4)
 #define SURVINV_TOTAL_VERTS     (SURVINV_MAX_ISO_VERTS + SURVINV_MAX_COUNT_VERTS)
 
 /* Field of view and camera distance used for the paperdoll preview's own */
@@ -2398,6 +2399,7 @@ static struct SurvivalInvScreen {
 	int  dollBoxX, dollBoxY, dollBoxSize;
 	int  craftGridX, craftGridY;  /* pixel origin of the 2x2 crafting grid */
 	int  craftResultX, craftResultY; /* pixel origin of the result slot */
+	int  hotbarY;          /* pixel y origin of the hotbar row (gridX shared with storage) */
 	int  heldCraftSlot;   /* held slot in crafting area (-1=nothing, 0-4=slot), or -1 */
 	int  mouseX, mouseY;   /* last known pointer position, or -1 if none yet */
 	int  countVertCount;
@@ -2407,11 +2409,19 @@ static struct SurvivalInvScreen {
 	struct Entity    doll;
 } SurvivalInvScreen_Instance CC_BIG_VAR;
 
-/* Returns the pixel origin (top-left corner) of a storage slot (9-35). */
+/* Returns the pixel origin (top-left corner) of any inventory slot (0-35). */
+/* Slots 0-8 (hotbar) are drawn as a 4th row below the 3 storage rows (9-35), */
+/*  separated by a small gap - matching the genuine Minecraft Beta layout.   */
 static void SurvivalInv_SlotXY(struct SurvivalInvScreen* s, int slot, int* ox, int* oy) {
-	int st  = slot - SURVIVAL_HOTBAR_SLOTS;
-	int col = st % SURVINV_STORAGE_COLS;
-	int row = st / SURVINV_STORAGE_COLS;
+	int col, row;
+	if (slot < SURVIVAL_HOTBAR_SLOTS) {
+		col = slot;
+		*ox = s->gridX + col * s->slotSize;
+		*oy = s->hotbarY;
+		return;
+	}
+	col = (slot - SURVIVAL_HOTBAR_SLOTS) % SURVINV_STORAGE_COLS;
+	row = (slot - SURVIVAL_HOTBAR_SLOTS) / SURVINV_STORAGE_COLS;
 	*ox = s->gridX + col * s->slotSize;
 	*oy = s->gridY + row * s->slotSize;
 }
@@ -2432,8 +2442,8 @@ static void SurvivalInv_CraftSlotXY(struct SurvivalInvScreen* s, int slot, int* 
 /* Returns the slot index (0-4 for crafting, or -1 for storage) under screen coordinates (mx, my). */
 static int SurvivalInv_HitSlot(struct SurvivalInvScreen* s, int mx, int my) {
 	int i, x, y;
-	/* Check storage slots first */
-	for (i = SURVIVAL_HOTBAR_SLOTS; i < SURVIVAL_INV_SLOTS; i++) {
+	/* Check all inventory slots (storage 9-35 + hotbar 0-8) */
+	for (i = 0; i < SURVIVAL_INV_SLOTS; i++) {
 		SurvivalInv_SlotXY(s, i, &x, &y);
 		if (mx >= x && mx < x + s->slotSize &&
 		    my >= y && my < y + s->slotSize) return i;
@@ -2555,9 +2565,9 @@ static void SurvivalInvScreen_BuildMesh(void* screen) {
 	data     = Screen_LockVb(s);
 	halfSize = s->slotSize * 0.5f;
 
-	/* ISO block pictures for all occupied storage slots */
+	/* ISO block pictures for all occupied inventory slots (storage + hotbar) */
 	IsometricDrawer_BeginBatch(data, s->isoState);
-	for (i = SURVIVAL_HOTBAR_SLOTS; i < SURVIVAL_INV_SLOTS; i++) {
+	for (i = 0; i < SURVIVAL_INV_SLOTS; i++) {
 		block = SurvivalTest_SlotBlock(i);
 		if (block == BLOCK_AIR) continue;
 		SurvivalInv_SlotXY(s, i, &slotX, &slotY);
@@ -2579,7 +2589,7 @@ static void SurvivalInvScreen_BuildMesh(void* screen) {
 	cur = countDst;
 	if (s->countAtlas.tex.ID) {
 		int savedY = s->countAtlas.tex.y;
-		for (i = SURVIVAL_HOTBAR_SLOTS; i < SURVIVAL_INV_SLOTS; i++) {
+		for (i = 0; i < SURVIVAL_INV_SLOTS; i++) {
 			count = SurvivalTest_SlotCount(i);
 			if (count <= 1) continue;
 			SurvivalInv_SlotXY(s, i, &slotX, &slotY);
@@ -2626,7 +2636,7 @@ static void SurvivalInvScreen_Render(void* screen, float delta) {
 	Gfx_Draw2DFlat(s->dollBoxX + 1, s->dollBoxY + 1, b - 2, b - 2, dollBg);
 
 	/* Slot backgrounds: recessed bevel (dark border + bottom/right highlight) */
-	for (i = SURVIVAL_HOTBAR_SLOTS; i < SURVIVAL_INV_SLOTS; i++) {
+	for (i = 0; i < SURVIVAL_INV_SLOTS; i++) {
 		SurvivalInv_SlotXY(s, i, &slotX, &slotY);
 		Gfx_Draw2DFlat(slotX,     slotY,     s->slotSize,     s->slotSize,
 		               i == s->heldSlot ? heldFill : panelBorder);
@@ -2742,8 +2752,10 @@ static void SurvivalInvScreen_Layout(void* screen) {
 	craftGridW = 2 * s->slotSize + gap;  /* 2x2 grid + gap + result slot */
 	topAreaH = s->dollBoxSize;
 
+	/* +gap +slotSize accounts for the hotbar row drawn below the storage grid, */
+	/*  separated by a small gap - matching the genuine Minecraft Beta layout. */
 	s->panelW = storageW + pad * 2;
-	s->panelH = pad + topAreaH + gap + storageH + pad;
+	s->panelH = pad + topAreaH + gap + storageH + gap + s->slotSize + pad;
 
 	s->panelX = (Window_Main.Width  - s->panelW) / 2;
 	s->panelY = (Window_Main.Height - s->panelH) / 2;
@@ -2759,6 +2771,7 @@ static void SurvivalInvScreen_Layout(void* screen) {
 
 	s->gridX = s->panelX + pad;
 	s->gridY = s->panelY + pad + topAreaH + gap;
+	s->hotbarY = s->gridY + storageH + gap;
 
 	s->heldCraftSlot = -1;
 	s->dirty = true;
