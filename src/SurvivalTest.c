@@ -195,36 +195,72 @@ static BlockID SurvivalTest_TryCraft2x2Simple(BlockID a, BlockID b, BlockID c, B
 /*  (grid indices 0-8 are row-major: 0,1,2 / 3,4,5 / 6,7,8). */
 static BlockID SurvivalTest_TryCraft3x3Tool(BlockID grid[9], int* outCount) {
 	int tier;
-	BlockID mat;
+	BlockID mat, stick = SURVIVAL_ITEM_STICK;
 	for (tier = 0; tier < SURVIVAL_TIER_COUNT; tier++) {
 		mat = SurvivalTest_TierMaterial(tier);
 		if (mat == BLOCK_AIR) continue;
 
-		/* Pickaxe: 3 material across the top, stick down the middle column */
+		/* Pickaxe: 3 material across the top, stick down the middle column.
+		   Spans the full width/height, so there's only one possible placement. */
 		if (grid[0]==mat && grid[1]==mat && grid[2]==mat &&
-		    grid[3]==BLOCK_AIR && grid[4]==SURVIVAL_ITEM_STICK && grid[5]==BLOCK_AIR &&
-		    grid[6]==BLOCK_AIR && grid[7]==SURVIVAL_ITEM_STICK && grid[8]==BLOCK_AIR) {
+		    grid[3]==BLOCK_AIR && grid[4]==stick && grid[5]==BLOCK_AIR &&
+		    grid[6]==BLOCK_AIR && grid[7]==stick && grid[8]==BLOCK_AIR) {
 			*outCount = SurvivalTest_TierDurability(tier);
 			return SURVIVAL_TOOL_ID(SURVIVAL_TOOL_PICKAXE, tier);
 		}
-		/* Axe: 2 material across the top-left, stick down the middle column */
+		/* Axe: 2 material side by side, stick down the column below either material -
+		   accepted in either the left/right pair of columns, and mirrored (handle
+		   under either material), matching every variant vanilla accepts. */
 		if (grid[0]==mat && grid[1]==mat && grid[2]==BLOCK_AIR &&
-		    grid[3]==BLOCK_AIR && grid[4]==SURVIVAL_ITEM_STICK && grid[5]==BLOCK_AIR &&
-		    grid[6]==BLOCK_AIR && grid[7]==SURVIVAL_ITEM_STICK && grid[8]==BLOCK_AIR) {
+		    grid[3]==BLOCK_AIR && grid[5]==BLOCK_AIR &&
+		    grid[6]==BLOCK_AIR && grid[8]==BLOCK_AIR &&
+		    ((grid[4]==stick && grid[7]==stick) || (grid[3]==stick && grid[6]==stick))) {
 			*outCount = SurvivalTest_TierDurability(tier);
 			return SURVIVAL_TOOL_ID(SURVIVAL_TOOL_AXE, tier);
 		}
-		/* Sword: 2 material stacked in the middle column, stick below */
-		if (grid[0]==BLOCK_AIR && grid[1]==mat && grid[2]==BLOCK_AIR &&
-		    grid[3]==BLOCK_AIR && grid[4]==mat && grid[5]==BLOCK_AIR &&
-		    grid[6]==BLOCK_AIR && grid[7]==SURVIVAL_ITEM_STICK && grid[8]==BLOCK_AIR) {
+		if (grid[1]==mat && grid[2]==mat && grid[0]==BLOCK_AIR &&
+		    grid[3]==BLOCK_AIR && grid[5]==BLOCK_AIR &&
+		    grid[6]==BLOCK_AIR && grid[8]==BLOCK_AIR &&
+		    ((grid[4]==stick && grid[7]==stick) || (grid[5]==stick && grid[8]==stick))) {
+			*outCount = SurvivalTest_TierDurability(tier);
+			return SURVIVAL_TOOL_ID(SURVIVAL_TOOL_AXE, tier);
+		}
+		/* Sword: 2 material stacked in a column, stick below - the column can be */
+		/*  any of the 3 (left, middle, right), matching wherever the player puts it. */
+		if (grid[1]==mat && grid[4]==mat && grid[7]==stick &&
+		    grid[0]==BLOCK_AIR && grid[2]==BLOCK_AIR && grid[3]==BLOCK_AIR &&
+		    grid[5]==BLOCK_AIR && grid[6]==BLOCK_AIR && grid[8]==BLOCK_AIR) {
 			*outCount = SurvivalTest_TierDurability(tier);
 			return SURVIVAL_TOOL_ID(SURVIVAL_TOOL_SWORD, tier);
 		}
-		/* Shovel: 1 material on top, stick down the middle column */
-		if (grid[0]==BLOCK_AIR && grid[1]==mat && grid[2]==BLOCK_AIR &&
-		    grid[3]==BLOCK_AIR && grid[4]==SURVIVAL_ITEM_STICK && grid[5]==BLOCK_AIR &&
-		    grid[6]==BLOCK_AIR && grid[7]==SURVIVAL_ITEM_STICK && grid[8]==BLOCK_AIR) {
+		if (grid[0]==mat && grid[3]==mat && grid[6]==stick &&
+		    grid[1]==BLOCK_AIR && grid[2]==BLOCK_AIR && grid[4]==BLOCK_AIR &&
+		    grid[5]==BLOCK_AIR && grid[7]==BLOCK_AIR && grid[8]==BLOCK_AIR) {
+			*outCount = SurvivalTest_TierDurability(tier);
+			return SURVIVAL_TOOL_ID(SURVIVAL_TOOL_SWORD, tier);
+		}
+		if (grid[2]==mat && grid[5]==mat && grid[8]==stick &&
+		    grid[0]==BLOCK_AIR && grid[1]==BLOCK_AIR && grid[3]==BLOCK_AIR &&
+		    grid[4]==BLOCK_AIR && grid[6]==BLOCK_AIR && grid[7]==BLOCK_AIR) {
+			*outCount = SurvivalTest_TierDurability(tier);
+			return SURVIVAL_TOOL_ID(SURVIVAL_TOOL_SWORD, tier);
+		}
+		/* Shovel: 1 material on top, stick down the same column - any of the 3 columns. */
+		if (grid[1]==mat && grid[4]==stick && grid[7]==stick &&
+		    grid[0]==BLOCK_AIR && grid[2]==BLOCK_AIR && grid[3]==BLOCK_AIR &&
+		    grid[5]==BLOCK_AIR && grid[6]==BLOCK_AIR && grid[8]==BLOCK_AIR) {
+			*outCount = SurvivalTest_TierDurability(tier);
+			return SURVIVAL_TOOL_ID(SURVIVAL_TOOL_SHOVEL, tier);
+		}
+		if (grid[0]==mat && grid[3]==stick && grid[6]==stick &&
+		    grid[1]==BLOCK_AIR && grid[2]==BLOCK_AIR && grid[4]==BLOCK_AIR &&
+		    grid[5]==BLOCK_AIR && grid[7]==BLOCK_AIR && grid[8]==BLOCK_AIR) {
+			*outCount = SurvivalTest_TierDurability(tier);
+			return SURVIVAL_TOOL_ID(SURVIVAL_TOOL_SHOVEL, tier);
+		}
+		if (grid[2]==mat && grid[5]==stick && grid[8]==stick &&
+		    grid[0]==BLOCK_AIR && grid[1]==BLOCK_AIR && grid[3]==BLOCK_AIR &&
+		    grid[4]==BLOCK_AIR && grid[6]==BLOCK_AIR && grid[7]==BLOCK_AIR) {
 			*outCount = SurvivalTest_TierDurability(tier);
 			return SURVIVAL_TOOL_ID(SURVIVAL_TOOL_SHOVEL, tier);
 		}
